@@ -237,7 +237,9 @@ async def run_monitor(
             )
         if not once:
             preference_bot = TelegramPreferenceBot(
-                config.telegram_bot_token, config.search.keywords
+                config.telegram_bot_token,
+                config.search.keywords,
+                discord_new_user_webhook_url=config.discord_new_user_webhook_url,
             )
             preference_task = asyncio.create_task(preference_bot.poll_forever(storage))
 

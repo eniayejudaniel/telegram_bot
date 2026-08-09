@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from ebay_monitor.storage import Storage
 from ebay_monitor.telegram_preferences import TelegramPreferenceBot
@@ -56,6 +57,35 @@ class UserPreferenceStorageTests(unittest.TestCase):
 
 
 class KeywordKeyboardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_discord_notification_only_runs_for_first_user_interaction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            storage = Storage(Path(temp) / "test.sqlite3")
+            bot = TelegramPreferenceBot(
+                "test-token",
+                ["pokemon tin"],
+                discord_new_user_webhook_url="https://discord.invalid/webhook",
+            )
+            bot.notify_new_user = AsyncMock()
+            bot.show_main_menu = AsyncMock()
+            message = {
+                "text": "/start",
+                "chat": {
+                    "id": 101,
+                    "type": "private",
+                    "username": "alice",
+                    "first_name": "Alice",
+                },
+            }
+            try:
+                await bot.handle_message(message, storage)
+                await bot.handle_message(message, storage)
+                bot.notify_new_user.assert_awaited_once_with(
+                    "101", username="alice", first_name="Alice"
+                )
+            finally:
+                await bot.close()
+                storage.close()
+
     async def test_keyboard_marks_selected_keywords_and_has_done(self) -> None:
         bot = TelegramPreferenceBot("test-token", ["pokemon tin", "one piece booster box"])
         try:

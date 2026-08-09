@@ -166,7 +166,7 @@ class Storage:
         username: str = "",
         first_name: str = "",
         active: bool | None = None,
-    ) -> None:
+    ) -> bool:
         now = time.time()
         existing = self.connection.execute(
             "SELECT 1 FROM telegram_users WHERE chat_id = ?",
@@ -192,7 +192,7 @@ class Storage:
                     (username, first_name, int(active), now, str(chat_id)),
                 )
             self.connection.commit()
-            return
+            return False
         self.connection.execute(
             """
             INSERT INTO telegram_users (
@@ -202,6 +202,7 @@ class Storage:
             (str(chat_id), username, first_name, int(active if active is not None else True), now, now),
         )
         self.connection.commit()
+        return True
 
     def set_user_active(self, chat_id: str | int, active: bool) -> None:
         self.connection.execute(

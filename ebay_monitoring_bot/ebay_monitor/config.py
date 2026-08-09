@@ -68,6 +68,7 @@ class AppConfig:
     parser: ParserSettings
     telegram_bot_token: str
     telegram_chat_id: str
+    discord_new_user_webhook_url: str
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -155,4 +156,5 @@ def load_config(path: str | Path) -> AppConfig:
         ),
         telegram_bot_token=_env("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
+        discord_new_user_webhook_url=_env("DISCORD_NEW_USER_WEBHOOK_URL"),
     )

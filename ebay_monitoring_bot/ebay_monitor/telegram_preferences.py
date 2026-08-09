@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -13,12 +14,19 @@ LOGGER = logging.getLogger("ebay_monitor")
 
 
 class TelegramPreferenceBot:
-    def __init__(self, token: str, keywords: list[str]) -> None:
+    def __init__(
+        self,
+        token: str,
+        keywords: list[str],
+        *,
+        discord_new_user_webhook_url: str = "",
+    ) -> None:
         self.token = token
         self.keywords = list(dict.fromkeys(keywords))
         self._client = httpx.AsyncClient(timeout=35)
         self._offset = 0
         self._drafts: dict[str, set[str]] = {}
+        self.discord_new_user_webhook_url = discord_new_user_webhook_url
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -50,6 +58,41 @@ class TelegramPreferenceBot:
         if reply_markup:
             payload["reply_markup"] = reply_markup
         await self._request("sendMessage", payload)
+
+    async def notify_new_user(
+        self,
+        chat_id: str,
+        *,
+        username: str,
+        first_name: str,
+    ) -> None:
+        if not self.discord_new_user_webhook_url:
+            return
+        fields = [
+            {"name": "Telegram user", "value": html.escape(first_name) or "Unknown", "inline": True},
+            {"name": "Username", "value": f"@{username}" if username else "Not provided", "inline": True},
+            {"name": "Chat ID", "value": chat_id, "inline": False},
+        ]
+        payload = {
+            "username": "TCG Sourcing Bot Monitor",
+            "embeds": [{
+                "title": "New Telegram user",
+                "color": 0x2ECC71,
+                "fields": fields,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }],
+            "allowed_mentions": {"parse": []},
+        }
+        try:
+            response = await self._client.post(self.discord_new_user_webhook_url, json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            LOGGER.warning(
+                "Discord new-user notification returned HTTP %s.",
+                exc.response.status_code,
+            )
+        except httpx.HTTPError:
+            LOGGER.warning("Discord new-user notification request failed.")
 
     def selection_keyboard(self, selected: set[str]) -> dict[str, Any]:
         buttons = [
@@ -107,9 +150,17 @@ class TelegramPreferenceBot:
             return
         chat_id = str(chat["id"])
         command = str(message.get("text") or "").split(maxsplit=1)[0].casefold()
-        storage.upsert_telegram_user(chat_id, username=str(chat.get("username") or ""),
-            first_name=str(chat.get("first_name") or ""),
+        username = str(chat.get("username") or "")
+        first_name = str(chat.get("first_name") or "")
+        is_new_user = storage.upsert_telegram_user(chat_id, username=username,
+            first_name=first_name,
             active=True if command in {"/start", "/keywords", "/alerts", "/resume"} else None)
+        if is_new_user:
+            await self.notify_new_user(
+                chat_id,
+                username=username,
+                first_name=first_name,
+            )
         if command == "/start":
             await self.show_main_menu(chat_id, storage, welcome=True)
         elif command in {"/keywords", "/alerts"}:
