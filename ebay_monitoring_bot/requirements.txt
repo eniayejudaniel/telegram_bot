@@ -1,0 +1,6 @@
+httpx
+curl_cffi
+parsel
+camoufox
+python-dotenv
+PyYAML

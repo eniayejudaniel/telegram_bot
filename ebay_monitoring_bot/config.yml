@@ -1,0 +1,137 @@
+poll_interval_seconds: 600
+marketplace_id: EBAY_GB
+currency: GBP
+database_path: data/ebay_monitor.sqlite3
+dry_run: false
+
+fetch:
+  homepage_url: https://www.ebay.co.uk/
+  search_url: https://www.ebay.co.uk/sch/i.html
+  identity_id: ebay_uk_default
+  session_directory: data/sessions
+  impersonate: chrome
+  locale: en-GB
+  proxy_url: ""
+  warm_homepage_first: true
+  use_camoufox_on_start: false
+  use_camoufox_on_challenge: true
+  camoufox_headless: true
+  camoufox_wait_ms: 3000
+  request_timeout_seconds: 45
+  request_retries: 1
+  retry_backoff_seconds: 2
+  max_concurrent_requests: 6
+  cycle_timeout_seconds: 300
+
+search:
+  limit_per_page: 100
+  max_pages_per_keyword: 2
+  buying_options:
+    - bin
+    - auction
+  keywords:
+    - pokemon etb
+    - pokemon center etb
+    - pokemon booster box
+    - pokemon booster bundle
+    - pokemon premium collection
+    - pokemon collection box
+    - pokemon tin
+    - pokemon graded card
+    - pokemon japanese booster box
+    - pokemon japanese sealed
+    - one piece booster box
+    - one piece booster display
+    - one piece japanese booster box
+    - one piece sealed case
+    - one piece graded card
+  excluded_title_terms:
+    - empty box
+    - digital
+    - proxy
+    - custom proxy
+    - code card
+    - online code
+    - resealed
+
+pricing:
+  alert_threshold_below_median: 0.28
+  min_baseline_samples: 5
+  uncertain_listing_alerts: true
+  priority_weight_mixed_lot: 15
+  priority_weight_exclusive: 20
+  max_alerts_per_cycle: 5
+
+parser:
+  assumed_case_units:
+    pokemon_center_etb: 4
+    elite_trainer_box: 10
+    booster_box: 6
+    one_piece_booster_box: 12
+    booster_bundle: 10
+    premium_collection: 6
+    tin: 12
+  set_aliases:
+    pokemon:
+      scarlet violet: Scarlet & Violet
+      paldea evolved: Paldea Evolved
+      obsidian flames: Obsidian Flames
+      pokemon 151: Pokemon 151
+      sv 151: Pokemon 151
+      paradox rift: Paradox Rift
+      paldean fates: Paldean Fates
+      temporal forces: Temporal Forces
+      twilight masquerade: Twilight Masquerade
+      shrouded fable: Shrouded Fable
+      stellar crown: Stellar Crown
+      surging sparks: Surging Sparks
+      prismatic evolutions: Prismatic Evolutions
+      journey together: Journey Together
+      black bolt: Black Bolt
+      white flare: White Flare
+      phantasmal flames: Phantasmal Flames
+      mega evolution: Mega Evolution
+      ruler of the black flame: Ruler of the Black Flame
+      shiny treasure ex: Shiny Treasure ex
+      clay burst: Clay Burst
+      snow hazard: Snow Hazard
+      vstar universe: VSTAR Universe
+      tag team gx: Tag Team GX
+      evolving skies: Evolving Skies
+      lost origin: Lost Origin
+      silver tempest: Silver Tempest
+      brilliant stars: Brilliant Stars
+      crown zenith: Crown Zenith
+    one_piece:
+      op01: Romance Dawn
+      op-01: Romance Dawn
+      romance dawn: Romance Dawn
+      op02: Paramount War
+      op-02: Paramount War
+      paramount war: Paramount War
+      op03: Pillars of Strength
+      op-03: Pillars of Strength
+      pillars of strength: Pillars of Strength
+      op04: Kingdom of Intrigue
+      op-04: Kingdom of Intrigue
+      kingdom of intrigue: Kingdom of Intrigue
+      kingdoms of intrigue: Kingdoms of Intrigue
+      op05: Awakening of the New Era
+      op-05: Awakening of the New Era
+      awakening of the new era: Awakening of the New Era
+      op06: Wings of the Captain
+      op-06: Wings of the Captain
+      wings of the captain: Wings of the Captain
+      op08: Two Legends
+      op-08: Two Legends
+      two legends: Two Legends
+      op09: Emperors in the New World
+      op-09: Emperors in the New World
+      emperors in the new world: Emperors in the New World
+      op10: Royal Blood
+      op-10: Royal Blood
+      royal blood: Royal Blood
+      op11: A Fist of Divine Speed
+      op-11: A Fist of Divine Speed
+      a fist of divine speed: A Fist of Divine Speed
+      legacy of the master: Legacy of the Master
