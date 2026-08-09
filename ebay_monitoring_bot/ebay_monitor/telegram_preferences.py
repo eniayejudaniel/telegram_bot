@@ -28,8 +28,15 @@ class TelegramPreferenceBot:
         return f"https://api.telegram.org/bot{self.token}"
 
     async def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = await self._client.post(f"{self.api_url}/{method}", json=payload)
-        response.raise_for_status()
+        try:
+            response = await self._client.post(f"{self.api_url}/{method}", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f"Telegram {method} returned HTTP {exc.response.status_code}."
+            ) from None
+        except httpx.HTTPError:
+            raise RuntimeError(f"Telegram {method} request failed.") from None
         data = response.json()
         if not data.get("ok"):
             raise RuntimeError(f"Telegram {method} failed: {data.get('description', 'unknown error')}")
