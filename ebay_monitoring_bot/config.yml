@@ -4,6 +4,24 @@ currency: GBP
 database_path: data/ebay_monitor.sqlite3
 dry_run: false
 
+marketplaces:
+  - marketplace_id: EBAY_GB
+    label: United Kingdom
+    currency: GBP
+    fetch:
+      homepage_url: https://www.ebay.co.uk/
+      search_url: https://www.ebay.co.uk/sch/i.html
+      identity_id: ebay_uk_default
+      locale: en-GB
+  - marketplace_id: EBAY_US
+    label: United States
+    currency: USD
+    fetch:
+      homepage_url: https://www.ebay.com/
+      search_url: https://www.ebay.com/sch/i.html
+      identity_id: ebay_us_default
+      locale: en-US
+
 fetch:
   homepage_url: https://www.ebay.co.uk/
   search_url: https://www.ebay.co.uk/sch/i.html

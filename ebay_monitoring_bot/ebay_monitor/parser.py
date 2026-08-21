@@ -478,9 +478,11 @@ def coupon_text(item: dict[str, Any]) -> str:
 
 
 def clean_item_url(url: str, item_id: str) -> str:
-    if item_id:
-        return f"https://www.ebay.co.uk/itm/{item_id}"
     parsed = urlparse(unescape(url or ""))
+    if item_id:
+        hostname = (parsed.hostname or "www.ebay.co.uk").casefold()
+        domain = "www.ebay.com" if hostname.endswith("ebay.com") else "www.ebay.co.uk"
+        return f"https://{domain}/itm/{item_id}"
     if parsed.scheme and parsed.netloc and parsed.path:
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
     return unescape(url or "")
@@ -588,7 +590,7 @@ def parse_search_card(card: Selector, buying_option_hint: str = "") -> dict[str,
         "itemWebUrl": clean_item_url(href, item_id),
         "price": {"value": f"{price:.2f}", "currency": currency},
         "shippingOptions": [
-            {"shippingCost": {"value": f"{parse_shipping_from_texts(texts):.2f}", "currency": "GBP"}}
+            {"shippingCost": {"value": f"{parse_shipping_from_texts(texts):.2f}", "currency": currency}}
         ],
         "buyingOptions": parse_buying_options_from_texts(texts, buying_option_hint),
         "seller": {},
@@ -681,7 +683,7 @@ def merge_detail_into_listing(
 ) -> None:
     if detail.get("title"):
         listing.title = str(detail["title"])
-    if detail.get("price_currency") == "GBP" and detail.get("price"):
+    if detail.get("price_currency") == listing.currency and detail.get("price"):
         listing.item_price = float(detail["price"])
     if detail.get("postage"):
         listing.postage = float(detail["postage"])

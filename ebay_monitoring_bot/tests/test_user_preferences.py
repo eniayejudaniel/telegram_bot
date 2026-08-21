@@ -55,6 +55,27 @@ class UserPreferenceStorageTests(unittest.TestCase):
         self.assertTrue(self.storage.should_alert_user("202", "item", 100))
         self.assertTrue(self.storage.should_alert_user("101", "item", 90))
 
+    def test_marketplace_subscriptions_route_keywords_independently(self) -> None:
+        self.storage.upsert_telegram_user("101")
+        self.storage.upsert_telegram_user("202")
+        self.storage.replace_user_keywords("101", {"pokemon tin"})
+        self.storage.replace_user_keywords("202", {"pokemon tin"})
+        self.storage.replace_user_marketplaces("101", {"EBAY_GB", "EBAY_US"})
+        self.storage.replace_user_marketplaces("202", {"EBAY_US"})
+
+        self.assertEqual(
+            self.storage.active_marketplace_keyword_routes(),
+            {
+                ("EBAY_GB", "pokemon tin"): {"101"},
+                ("EBAY_US", "pokemon tin"): {"101", "202"},
+            },
+        )
+
+    def test_existing_users_default_to_uk_marketplace(self) -> None:
+        self.storage.upsert_telegram_user("legacy")
+        self.storage.replace_user_keywords("legacy", {"pokemon tin"})
+        self.assertEqual(self.storage.get_user_marketplaces("legacy"), {"EBAY_GB"})
+
 
 class KeywordKeyboardTests(unittest.IsolatedAsyncioTestCase):
     async def test_discord_notification_only_runs_for_first_user_interaction(self) -> None:
@@ -87,14 +108,21 @@ class KeywordKeyboardTests(unittest.IsolatedAsyncioTestCase):
                 storage.close()
 
     async def test_keyboard_marks_selected_keywords_and_has_done(self) -> None:
-        bot = TelegramPreferenceBot("test-token", ["pokemon tin", "one piece booster box"])
+        bot = TelegramPreferenceBot(
+            "test-token",
+            ["pokemon tin", "one piece booster box"],
+            marketplaces={"EBAY_GB": "United Kingdom", "EBAY_US": "United States"},
+        )
         try:
-            keyboard = bot.selection_keyboard({"pokemon tin"})["inline_keyboard"]
+            keyboard = bot.selection_keyboard({"pokemon tin"}, {"EBAY_US"})["inline_keyboard"]
             texts = [button["text"] for row in keyboard for button in row]
             callbacks = [button["callback_data"] for row in keyboard for button in row]
             self.assertIn("✅ Pokemon Tin", texts)
             self.assertIn("▫️ One Piece Booster Box", texts)
             self.assertIn("kw_done", callbacks)
+            self.assertIn("▫️ United Kingdom", texts)
+            self.assertIn("✅ United States", texts)
+            self.assertIn("mp:1", callbacks)
         finally:
             await bot.close()
 

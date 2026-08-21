@@ -9,8 +9,8 @@ from .models import AlertCandidate, Component, ComponentValuation
 from .parser import time_remaining
 
 
-def money(value: float) -> str:
-    return f"GBP {value:,.2f}"
+def money(value: float, currency: str = "GBP") -> str:
+    return f"{currency} {value:,.2f}"
 
 
 def pct(value: float) -> str:
@@ -26,14 +26,14 @@ def component_label(component: Component) -> str:
     return f"{component.quantity}x {language}{variant}{product_type}{set_name}{identity}"
 
 
-def valuation_line(valuation: ComponentValuation) -> str:
+def valuation_line(valuation: ComponentValuation, currency: str = "GBP") -> str:
     label = component_label(valuation.component)
     if valuation.baseline is None:
         return f"- {html.escape(label)}: no baseline"
     sample = valuation.baseline.sample_size
     return (
-        f"- {html.escape(label)}: {money(valuation.unit_value)} each "
-        f"x {valuation.component.quantity} = {money(valuation.total_value)} "
+        f"- {html.escape(label)}: {money(valuation.unit_value, currency)} each "
+        f"x {valuation.component.quantity} = {money(valuation.total_value, currency)} "
         f"(n={sample})"
     )
 
@@ -52,7 +52,10 @@ def format_alert(alert: AlertCandidate) -> str:
         )
         seller_feedback = f"{count} / {percentage}"
 
-    breakdown = "\n".join(valuation_line(valuation) for valuation in alert.valuations)
+    currency = listing.currency or "GBP"
+    marketplace_id = str(listing.raw.get("marketplace_id") or "EBAY_GB")
+    marketplace_label = {"EBAY_GB": "eBay UK", "EBAY_US": "eBay US"}.get(marketplace_id, marketplace_id)
+    breakdown = "\n".join(valuation_line(valuation, currency) for valuation in alert.valuations)
     if not breakdown:
         breakdown = "- Contents could not be parsed confidently."
 
@@ -62,13 +65,13 @@ def format_alert(alert: AlertCandidate) -> str:
 
     reasons = ", ".join(alert.reasons) if alert.reasons else "threshold match"
     return (
-        f"<b>eBay deal alert</b> [{html.escape(alert.confidence)}]\n"
+        f"<b>{html.escape(marketplace_label)} deal alert</b> [{html.escape(alert.confidence)}]\n"
         f"<a href=\"{link}\">{title}</a>\n\n"
-        f"<b>Price</b>: {money(listing.total_price)} "
-        f"(item {money(listing.item_price)} + postage {money(listing.postage)})\n"
-        f"<b>Units</b>: {listing.total_units} total, {money(listing.price_per_unit)} per unit\n"
-        f"<b>Baseline</b>: {money(alert.baseline_total)}\n"
-        f"<b>Below market</b>: {money(alert.opportunity_gbp)} / {pct(alert.below_market_pct)}\n"
+        f"<b>Price</b>: {money(listing.total_price, currency)} "
+        f"(item {money(listing.item_price, currency)} + postage {money(listing.postage, currency)})\n"
+        f"<b>Units</b>: {listing.total_units} total, {money(listing.price_per_unit, currency)} per unit\n"
+        f"<b>Baseline</b>: {money(alert.baseline_total, currency)}\n"
+        f"<b>Below market</b>: {money(alert.opportunity_gbp, currency)} / {pct(alert.below_market_pct)}\n"
         f"<b>Priority</b>: {alert.priority_score:.2f} ({html.escape(reasons)})\n\n"
         f"<b>Contents</b>\n{breakdown}\n\n"
         f"<b>Seller</b>: {html.escape(listing.seller_username or 'N/A')} "

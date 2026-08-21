@@ -1,6 +1,6 @@
 # eBay Monitoring Bot
 
-Monitors eBay UK for Pokemon and One Piece listings, builds active-listing medians, and sends Telegram alerts when listings look underpriced.
+Monitors eBay UK and eBay US for Pokemon and One Piece listings, builds marketplace-specific active-listing medians, and sends Telegram alerts when listings look underpriced.
 
 This version fetches eBay directly:
 
@@ -10,7 +10,7 @@ This version fetches eBay directly:
 
 ## What It Does
 
-- Polls eBay UK every 10 minutes by default.
+- Polls eBay UK and eBay US every 10 minutes by default.
 - Uses editable keywords from `config.yml`.
 - Covers Buy It Now and auction search pages.
 - Parses sealed Pokemon / One Piece product types, Pokemon Center ETBs, booster boxes, booster bundles, tins, collections, loose packs, and raw/graded cards.
@@ -70,12 +70,12 @@ python run.py
 
 Continuous mode also runs the Telegram preference interface. Users can send:
 
-- `/start` or `/keywords` to open the keyword selector.
+- `/start` or `/keywords` to choose marketplaces and alert keywords.
 - `/status` to view saved alerts.
 - `/stop` to pause delivery without deleting selections.
 - `/help` to view commands.
 
-Selections are committed when the user presses **Done**, stored in SQLite, and checked every
+Marketplace and keyword selections are committed when the user presses **Save alerts**, stored in SQLite, and checked every
 `poll_interval_seconds` (10 minutes by default). The monitor searches the union of active user
 keywords and routes each matching listing only to subscribed chats. Alert history and the
 per-cycle alert cap are maintained separately for every user.

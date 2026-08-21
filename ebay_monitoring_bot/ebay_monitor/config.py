@@ -56,6 +56,14 @@ class ParserSettings:
 
 
 @dataclass
+class MarketplaceSettings:
+    marketplace_id: str
+    label: str
+    currency: str
+    fetch: FetchSettings
+
+
+@dataclass
 class AppConfig:
     poll_interval_seconds: int
     marketplace_id: str
@@ -69,6 +77,7 @@ class AppConfig:
     telegram_bot_token: str
     telegram_chat_id: str
     discord_new_user_webhook_url: str
+    marketplaces: list[MarketplaceSettings] = field(default_factory=list)
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -97,31 +106,69 @@ def load_config(path: str | Path) -> AppConfig:
     if not keywords:
         raise ValueError("At least one search keyword is required.")
 
+    legacy_fetch = FetchSettings(
+        homepage_url=str(fetch_data.get("homepage_url", "https://www.ebay.co.uk/")),
+        search_url=str(fetch_data.get("search_url", "https://www.ebay.co.uk/sch/i.html")),
+        identity_id=str(fetch_data.get("identity_id", "ebay_uk_default")),
+        session_directory=Path(fetch_data.get("session_directory", "data/sessions")),
+        impersonate=str(fetch_data.get("impersonate", "chrome")),
+        locale=str(fetch_data.get("locale", "en-GB")),
+        proxy_url=_env("EBAY_PROXY_URL", str(fetch_data.get("proxy_url", ""))),
+        warm_homepage_first=bool(fetch_data.get("warm_homepage_first", True)),
+        use_camoufox_on_start=bool(fetch_data.get("use_camoufox_on_start", False)),
+        use_camoufox_on_challenge=bool(fetch_data.get("use_camoufox_on_challenge", True)),
+        camoufox_headless=bool(fetch_data.get("camoufox_headless", True)),
+        camoufox_wait_ms=int(fetch_data.get("camoufox_wait_ms", 3000)),
+        request_timeout_seconds=int(fetch_data.get("request_timeout_seconds", 60)),
+        request_retries=int(fetch_data.get("request_retries", 2)),
+        retry_backoff_seconds=float(fetch_data.get("retry_backoff_seconds", 2.0)),
+        max_concurrent_requests=int(fetch_data.get("max_concurrent_requests", 6)),
+        cycle_timeout_seconds=int(fetch_data.get("cycle_timeout_seconds", 300)),
+    )
+    marketplace_data = data.get("marketplaces") or []
+    marketplaces: list[MarketplaceSettings] = []
+    for entry in marketplace_data:
+        merged = {**fetch_data, **(entry.get("fetch") or {})}
+        marketplace_id = str(entry["marketplace_id"])
+        marketplaces.append(MarketplaceSettings(
+            marketplace_id=marketplace_id,
+            label=str(entry.get("label", marketplace_id)),
+            currency=str(entry.get("currency", "GBP")),
+            fetch=FetchSettings(
+                homepage_url=str(merged.get("homepage_url", legacy_fetch.homepage_url)),
+                search_url=str(merged.get("search_url", legacy_fetch.search_url)),
+                identity_id=str(merged.get("identity_id", marketplace_id.casefold())),
+                session_directory=Path(merged.get("session_directory", legacy_fetch.session_directory)),
+                impersonate=str(merged.get("impersonate", legacy_fetch.impersonate)),
+                locale=str(merged.get("locale", legacy_fetch.locale)),
+                proxy_url=_env("EBAY_PROXY_URL", str(merged.get("proxy_url", ""))),
+                warm_homepage_first=bool(merged.get("warm_homepage_first", legacy_fetch.warm_homepage_first)),
+                use_camoufox_on_start=bool(merged.get("use_camoufox_on_start", legacy_fetch.use_camoufox_on_start)),
+                use_camoufox_on_challenge=bool(merged.get("use_camoufox_on_challenge", legacy_fetch.use_camoufox_on_challenge)),
+                camoufox_headless=bool(merged.get("camoufox_headless", legacy_fetch.camoufox_headless)),
+                camoufox_wait_ms=int(merged.get("camoufox_wait_ms", legacy_fetch.camoufox_wait_ms)),
+                request_timeout_seconds=int(merged.get("request_timeout_seconds", legacy_fetch.request_timeout_seconds)),
+                request_retries=int(merged.get("request_retries", legacy_fetch.request_retries)),
+                retry_backoff_seconds=float(merged.get("retry_backoff_seconds", legacy_fetch.retry_backoff_seconds)),
+                max_concurrent_requests=int(merged.get("max_concurrent_requests", legacy_fetch.max_concurrent_requests)),
+                cycle_timeout_seconds=int(merged.get("cycle_timeout_seconds", legacy_fetch.cycle_timeout_seconds)),
+            ),
+        ))
+    if not marketplaces:
+        marketplaces = [MarketplaceSettings(
+            marketplace_id=str(data.get("marketplace_id", "EBAY_GB")),
+            label="United Kingdom",
+            currency=str(data.get("currency", "GBP")),
+            fetch=legacy_fetch,
+        )]
+
     return AppConfig(
         poll_interval_seconds=int(data.get("poll_interval_seconds", 600)),
         marketplace_id=str(data.get("marketplace_id", "EBAY_GB")),
         currency=str(data.get("currency", "GBP")),
         database_path=Path(data.get("database_path", "data/ebay_monitor.sqlite3")),
         dry_run=bool(data.get("dry_run", False)),
-        fetch=FetchSettings(
-            homepage_url=str(fetch_data.get("homepage_url", "https://www.ebay.co.uk/")),
-            search_url=str(fetch_data.get("search_url", "https://www.ebay.co.uk/sch/i.html")),
-            identity_id=str(fetch_data.get("identity_id", "ebay_uk_default")),
-            session_directory=Path(fetch_data.get("session_directory", "data/sessions")),
-            impersonate=str(fetch_data.get("impersonate", "chrome")),
-            locale=str(fetch_data.get("locale", "en-GB")),
-            proxy_url=_env("EBAY_PROXY_URL", str(fetch_data.get("proxy_url", ""))),
-            warm_homepage_first=bool(fetch_data.get("warm_homepage_first", True)),
-            use_camoufox_on_start=bool(fetch_data.get("use_camoufox_on_start", False)),
-            use_camoufox_on_challenge=bool(fetch_data.get("use_camoufox_on_challenge", True)),
-            camoufox_headless=bool(fetch_data.get("camoufox_headless", True)),
-            camoufox_wait_ms=int(fetch_data.get("camoufox_wait_ms", 3000)),
-            request_timeout_seconds=int(fetch_data.get("request_timeout_seconds", 60)),
-            request_retries=int(fetch_data.get("request_retries", 2)),
-            retry_backoff_seconds=float(fetch_data.get("retry_backoff_seconds", 2.0)),
-            max_concurrent_requests=int(fetch_data.get("max_concurrent_requests", 6)),
-            cycle_timeout_seconds=int(fetch_data.get("cycle_timeout_seconds", 300)),
-        ),
+        fetch=legacy_fetch,
         search=SearchSettings(
             keywords=[str(keyword) for keyword in keywords],
             limit_per_page=int(search_data.get("limit_per_page", 100)),
@@ -157,4 +204,5 @@ def load_config(path: str | Path) -> AppConfig:
         telegram_bot_token=_env("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=_env("TELEGRAM_CHAT_ID"),
         discord_new_user_webhook_url=_env("DISCORD_NEW_USER_WEBHOOK_URL"),
+        marketplaces=marketplaces,
     )

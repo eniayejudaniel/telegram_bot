@@ -69,6 +69,14 @@ class Storage:
                 FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id)
             );
 
+            CREATE TABLE IF NOT EXISTS user_marketplace_subscriptions (
+                chat_id TEXT NOT NULL,
+                marketplace_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (chat_id, marketplace_id),
+                FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id)
+            );
+
             CREATE TABLE IF NOT EXISTS user_alert_history (
                 chat_id TEXT NOT NULL,
                 item_id TEXT NOT NULL,
@@ -244,6 +252,46 @@ class Storage:
             (str(chat_id),),
         ).fetchall()
         return {str(row["keyword"]) for row in rows}
+
+    def replace_user_marketplaces(self, chat_id: str | int, marketplace_ids: set[str]) -> None:
+        chat_id_text = str(chat_id)
+        now = time.time()
+        with self.connection:
+            self.connection.execute(
+                "DELETE FROM user_marketplace_subscriptions WHERE chat_id = ?",
+                (chat_id_text,),
+            )
+            self.connection.executemany(
+                """
+                INSERT INTO user_marketplace_subscriptions (chat_id, marketplace_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                [(chat_id_text, marketplace_id, now) for marketplace_id in sorted(marketplace_ids)],
+            )
+
+    def get_user_marketplaces(self, chat_id: str | int) -> set[str]:
+        rows = self.connection.execute(
+            "SELECT marketplace_id FROM user_marketplace_subscriptions WHERE chat_id = ?",
+            (str(chat_id),),
+        ).fetchall()
+        # Existing users predate marketplace selection and remain subscribed to UK.
+        return {str(row["marketplace_id"]) for row in rows} or {"EBAY_GB"}
+
+    def active_marketplace_keyword_routes(self) -> dict[tuple[str, str], set[str]]:
+        rows = self.connection.execute(
+            """
+            SELECT s.keyword, s.chat_id, m.marketplace_id
+            FROM user_keyword_subscriptions AS s
+            JOIN telegram_users AS u ON u.chat_id = s.chat_id
+            LEFT JOIN user_marketplace_subscriptions AS m ON m.chat_id = s.chat_id
+            WHERE u.active = 1
+            """
+        ).fetchall()
+        routes: dict[tuple[str, str], set[str]] = {}
+        for row in rows:
+            marketplace_id = str(row["marketplace_id"] or "EBAY_GB")
+            routes.setdefault((marketplace_id, str(row["keyword"])), set()).add(str(row["chat_id"]))
+        return routes
 
     def active_keyword_routes(self) -> dict[str, set[str]]:
         rows = self.connection.execute(

@@ -19,6 +19,7 @@ class TelegramPreferenceBot:
         token: str,
         keywords: list[str],
         *,
+        marketplaces: dict[str, str] | None = None,
         discord_new_user_webhook_url: str = "",
     ) -> None:
         self.token = token
@@ -26,6 +27,8 @@ class TelegramPreferenceBot:
         self._client = httpx.AsyncClient(timeout=35)
         self._offset = 0
         self._drafts: dict[str, set[str]] = {}
+        self.marketplaces = marketplaces or {"EBAY_GB": "United Kingdom"}
+        self._marketplace_drafts: dict[str, set[str]] = {}
         self.discord_new_user_webhook_url = discord_new_user_webhook_url
 
     async def close(self) -> None:
@@ -94,12 +97,18 @@ class TelegramPreferenceBot:
         except httpx.HTTPError:
             LOGGER.warning("Discord new-user notification request failed.")
 
-    def selection_keyboard(self, selected: set[str]) -> dict[str, Any]:
+    def selection_keyboard(self, selected: set[str], selected_marketplaces: set[str] | None = None) -> dict[str, Any]:
+        selected_marketplaces = selected_marketplaces or set()
+        marketplace_buttons = [
+            {"text": f"{'✅' if marketplace_id in selected_marketplaces else '▫️'} {label}", "callback_data": f"mp:{index}"}
+            for index, (marketplace_id, label) in enumerate(self.marketplaces.items())
+        ]
         buttons = [
             {"text": f"{'✅' if keyword in selected else '▫️'} {keyword.title()}", "callback_data": f"kw:{index}"}
             for index, keyword in enumerate(self.keywords)
         ]
-        rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+        rows = [marketplace_buttons]
+        rows.extend(buttons[index:index + 2] for index in range(0, len(buttons), 2))
         rows.extend([
             [{"text": "Select all", "callback_data": "kw_all"}, {"text": "Clear", "callback_data": "kw_clear"}],
             [{"text": "✅ Save alerts", "callback_data": "kw_done"}, {"text": "Cancel", "callback_data": "kw_cancel"}],
@@ -116,33 +125,37 @@ class TelegramPreferenceBot:
             [{"text": "ℹ️ Help", "callback_data": "menu_help"}],
         ]}
 
-    def selection_text(self, selected: set[str]) -> str:
-        return ("<b>Choose your eBay alerts</b>\n\nTap products to turn them on or off, then save.\n"
-                f"Selected: <b>{len(selected)}</b>")
+    def selection_text(self, selected: set[str], selected_marketplaces: set[str] | None = None) -> str:
+        return ("<b>Choose your eBay alerts</b>\n\nChoose one or more marketplaces, then choose products and save.\n"
+                f"Marketplaces: <b>{len(selected_marketplaces or set())}</b> · Products: <b>{len(selected)}</b>")
 
     def status_text(self, chat_id: str, storage: Storage) -> str:
         keywords = sorted(storage.get_user_keywords(chat_id))
+        marketplaces = storage.get_user_marketplaces(chat_id)
         active = storage.is_user_active(chat_id) and bool(keywords)
         body = "\n".join(f"• {html.escape(k.title())}" for k in keywords) if keywords else "No alert products selected."
-        return f"<b>Your alert status: {'Active' if active else 'Paused'}</b>\n\n{body}\n\nListings are checked every 10 minutes."
+        market_body = ", ".join(html.escape(self.marketplaces.get(value, value)) for value in sorted(marketplaces))
+        return f"<b>Your alert status: {'Active' if active else 'Paused'}</b>\n\n<b>Marketplaces:</b> {market_body}\n\n{body}\n\nListings are checked every 10 minutes."
 
     async def show_main_menu(self, chat_id: str, storage: Storage, *, welcome: bool = False) -> None:
         keywords = storage.get_user_keywords(chat_id)
         active = storage.is_user_active(chat_id)
         text = ("<b>Welcome to TCG Sourcing Bot</b>\n\nChoose the Pokémon and One Piece products you want monitored. "
-                "I’ll send underpriced eBay UK listings with a direct link.\n\n" if welcome else "<b>TCG Sourcing Bot</b>\n\n")
+                "I’ll send underpriced eBay UK and US listings with a direct link.\n\n" if welcome else "<b>TCG Sourcing Bot</b>\n\n")
         text += "Your alerts are active." if active and keywords else "Configure alerts to get started."
         await self.send_message(chat_id, text, reply_markup=self.main_keyboard(active, bool(keywords)))
 
     async def show_selector(self, chat_id: str, storage: Storage, *, message_id: int | None = None) -> None:
         selected = set(storage.get_user_keywords(chat_id))
+        selected_marketplaces = set(storage.get_user_marketplaces(chat_id))
         self._drafts[chat_id] = selected
-        markup = self.selection_keyboard(selected)
+        self._marketplace_drafts[chat_id] = selected_marketplaces
+        markup = self.selection_keyboard(selected, selected_marketplaces)
         if message_id is None:
-            await self.send_message(chat_id, self.selection_text(selected), reply_markup=markup)
+            await self.send_message(chat_id, self.selection_text(selected, selected_marketplaces), reply_markup=markup)
         else:
             await self._request("editMessageText", {"chat_id": chat_id, "message_id": message_id,
-                "text": self.selection_text(selected), "parse_mode": "HTML", "reply_markup": markup})
+                "text": self.selection_text(selected, selected_marketplaces), "parse_mode": "HTML", "reply_markup": markup})
 
     async def handle_message(self, message: dict[str, Any], storage: Storage) -> None:
         chat = message.get("chat") or {}
@@ -214,11 +227,13 @@ class TelegramPreferenceBot:
             return
         elif data == "kw_cancel":
             self._drafts.pop(chat_id, None)
+            self._marketplace_drafts.pop(chat_id, None)
             await self._edit_status(chat_id, message_id, storage)
             await self._request("answerCallbackQuery", {"callback_query_id": query_id, "text": "No changes saved"})
             return
         else:
             selected = self._drafts.setdefault(chat_id, set(storage.get_user_keywords(chat_id)))
+            selected_marketplaces = self._marketplace_drafts.setdefault(chat_id, set(storage.get_user_marketplaces(chat_id)))
             if data.startswith("kw:"):
                 try:
                     keyword = self.keywords[int(data.split(":", 1)[1])]
@@ -226,23 +241,36 @@ class TelegramPreferenceBot:
                     keyword = ""
                 if keyword:
                     selected.symmetric_difference_update({keyword})
+            elif data.startswith("mp:"):
+                try:
+                    marketplace_id = list(self.marketplaces)[int(data.split(":", 1)[1])]
+                except (ValueError, IndexError):
+                    marketplace_id = ""
+                if marketplace_id:
+                    selected_marketplaces.symmetric_difference_update({marketplace_id})
             elif data == "kw_all": selected.update(self.keywords)
             elif data == "kw_clear": selected.clear()
             elif data == "kw_done":
                 if not selected:
                     await self._request("answerCallbackQuery", {"callback_query_id": query_id, "text": "Select at least one product first.", "show_alert": True})
                     return
+                if not selected_marketplaces:
+                    await self._request("answerCallbackQuery", {"callback_query_id": query_id, "text": "Select at least one marketplace first.", "show_alert": True})
+                    return
                 storage.replace_user_keywords(chat_id, selected)
+                storage.replace_user_marketplaces(chat_id, selected_marketplaces)
                 summary = "\n".join(f"• {html.escape(v.title())}" for v in sorted(selected))
+                market_summary = ", ".join(html.escape(self.marketplaces[value]) for value in sorted(selected_marketplaces))
                 await self._request("editMessageText", {"chat_id": chat_id, "message_id": message_id,
-                    "text": f"<b>Alerts saved ({len(selected)})</b>\n{summary}\n\nI’ll check eBay every 10 minutes.",
+                    "text": f"<b>Alerts saved ({len(selected)})</b>\n<b>Marketplaces:</b> {market_summary}\n\n{summary}\n\nI’ll check eBay every 10 minutes.",
                     "parse_mode": "HTML", "reply_markup": self.main_keyboard(True, True)})
                 self._drafts.pop(chat_id, None)
+                self._marketplace_drafts.pop(chat_id, None)
                 await self._request("answerCallbackQuery", {"callback_query_id": query_id, "text": "Saved"})
                 return
             if message_id:
                 await self._request("editMessageText", {"chat_id": chat_id, "message_id": message_id,
-                    "text": self.selection_text(selected), "parse_mode": "HTML", "reply_markup": self.selection_keyboard(selected)})
+                    "text": self.selection_text(selected, selected_marketplaces), "parse_mode": "HTML", "reply_markup": self.selection_keyboard(selected, selected_marketplaces)})
         if query_id:
             await self._request("answerCallbackQuery", {"callback_query_id": query_id})
 

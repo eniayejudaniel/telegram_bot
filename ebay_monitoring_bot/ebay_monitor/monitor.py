@@ -119,8 +119,14 @@ async def run_cycle(
     notifier: TelegramNotifier,
     *,
     multi_user: bool = False,
+    marketplace_id: str = "EBAY_GB",
 ) -> None:
-    routes = storage.active_keyword_routes() if multi_user else {}
+    marketplace_routes = storage.active_marketplace_keyword_routes() if multi_user else {}
+    routes = {
+        keyword: recipients
+        for (route_marketplace, keyword), recipients in marketplace_routes.items()
+        if route_marketplace == marketplace_id
+    }
     monitored_keywords = [keyword for keyword in config.search.keywords if keyword in routes]
     if multi_user and not monitored_keywords:
         LOGGER.info("No active user keyword subscriptions; skipping eBay cycle.")
@@ -131,6 +137,13 @@ async def run_cycle(
         client,
         keywords=monitored_keywords if multi_user else None,
     )
+    for listing in listings:
+        listing.raw["marketplace_id"] = marketplace_id
+        listing.item_id = f"{marketplace_id}:{listing.item_id}"
+    listing_keywords = {
+        f"{marketplace_id}:{item_id}": keywords
+        for item_id, keywords in listing_keywords.items()
+    }
     LOGGER.info("Fetched and parsed %s monitored listings.", len(listings))
 
     for listing in listings:
@@ -217,7 +230,10 @@ async def run_monitor(
     config = load_config(config_path)
     dry_run = dry_run_override or config.dry_run
     storage = Storage(config.database_path)
-    client = EbayFetchClient(config.fetch)
+    marketplace_clients = {
+        marketplace.marketplace_id: EbayFetchClient(marketplace.fetch)
+        for marketplace in config.marketplaces
+    }
     notifier = TelegramNotifier(
         bot_token=config.telegram_bot_token,
         chat_id=config.telegram_chat_id,
@@ -227,7 +243,7 @@ async def run_monitor(
     preference_task: asyncio.Task[None] | None = None
     try:
         try:
-            await client.start()
+            await asyncio.gather(*(client.start() for client in marketplace_clients.values()))
         except Exception:
             # Session creation normally succeeds before the optional homepage
             # warm-up. Treat a warm-up/proxy outage like a failed cycle so the
@@ -239,6 +255,7 @@ async def run_monitor(
             preference_bot = TelegramPreferenceBot(
                 config.telegram_bot_token,
                 config.search.keywords,
+                marketplaces={marketplace.marketplace_id: marketplace.label for marketplace in config.marketplaces},
                 discord_new_user_webhook_url=config.discord_new_user_webhook_url,
             )
             preference_task = asyncio.create_task(preference_bot.poll_forever(storage))
@@ -246,13 +263,15 @@ async def run_monitor(
         consecutive_cycle_failures = 0
         while True:
             try:
-                await run_cycle(
-                    config,
-                    client,
-                    storage,
-                    notifier,
-                    multi_user=not once,
-                )
+                for marketplace in config.marketplaces:
+                    await run_cycle(
+                        config,
+                        marketplace_clients[marketplace.marketplace_id],
+                        storage,
+                        notifier,
+                        multi_user=not once,
+                        marketplace_id=marketplace.marketplace_id,
+                    )
                 if consecutive_cycle_failures >= 3:
                     try:
                         await notifier.send_text(
@@ -282,5 +301,5 @@ async def run_monitor(
         if preference_bot:
             await preference_bot.close()
         storage.close()
-        await client.close()
+        await asyncio.gather(*(client.close() for client in marketplace_clients.values()))
         await notifier.close()
