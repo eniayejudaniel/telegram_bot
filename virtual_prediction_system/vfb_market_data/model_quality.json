@@ -1,0 +1,45 @@
+{
+  "generated_at": "2026-10-02T08:11:53.439400+00:00",
+  "live_matches": 13989,
+  "markets": {
+    "over_1_5": {
+      "enabled": false,
+      "threshold": 0.85,
+      "train": 10491,
+      "test": 3498,
+      "actual_rate": 0.7398513436249285,
+      "mean_probability": 0.7491881989071472,
+      "brier": 0.19047243724560303,
+      "baseline_brier": 0.19247133296131644,
+      "selected": 208,
+      "selected_mean_probability": 0.8671201451514878,
+      "selected_hit_rate": 0.8269230769230769
+    },
+    "under_3_5": {
+      "enabled": true,
+      "threshold": 0.82,
+      "train": 10491,
+      "test": 3498,
+      "actual_rate": 0.740423098913665,
+      "mean_probability": 0.739849116633185,
+      "brier": 0.18780407895619852,
+      "baseline_brier": 0.19219673350875008,
+      "selected": 346,
+      "selected_mean_probability": 0.8376471217631687,
+      "selected_hit_rate": 0.8439306358381503
+    },
+    "12": {
+      "enabled": false,
+      "threshold": 0.82,
+      "train": 10491,
+      "test": 3498,
+      "actual_rate": 0.7738707833047456,
+      "mean_probability": 0.7727745744364551,
+      "brier": 0.17553059025832243,
+      "baseline_brier": 0.1749947940520451,
+      "selected": 460,
+      "selected_mean_probability": 0.836615793067967,
+      "selected_hit_rate": 0.758695652173913
+    }
+  }
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=Real football 180-day historical backfill
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=virtualpredict
+Group=virtualpredict
+WorkingDirectory=/opt/virtual-prediction
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/virtual-prediction/.env
+ExecStart=/opt/virtual-prediction/.venv/bin/python -m real_football.backfill_livescore --days 180
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/virtual-prediction/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,131 @@
+import unittest
+import os
+import sqlite3
+
+from virtual_prediction_system import LogisticModel, build_combination, build_optimized_combination
+from live_runner import forward_gate, passes_market_pattern, target_round
+
+
+class PredictionSystemTests(unittest.TestCase):
+    def test_combination_uses_one_market_per_match(self):
+        candidates = [
+            {"match_id": 1, "market": "12", "probability": 0.84, "odds": 1.25},
+            {"match_id": 1, "market": "over_1_5", "probability": 0.82, "odds": 1.30},
+            {"match_id": 2, "market": "under_3_5", "probability": 0.80, "odds": 1.35},
+            {"match_id": 3, "market": "12", "probability": 0.78, "odds": 1.28},
+        ]
+        result = build_combination(candidates, legs=3)
+        self.assertEqual([leg["match_id"] for leg in result["legs"]], [1, 2, 3])
+        self.assertAlmostEqual(result["combined_odds"], 1.25 * 1.35 * 1.28)
+
+    def test_probability_is_bounded(self):
+        model = LogisticModel([0.0, 1000.0], [0.0], [1.0])
+        self.assertGreater(model.predict([10]), 0.999)
+        self.assertLess(model.predict([-10]), 0.001)
+
+    def test_target_round_moves_past_betstop(self):
+        competition = {"competition_id": 9, "start_datetime": 1000, "end_datetime": 7720}
+        self.assertEqual(target_round(competition, 1060), (9, 1))
+        self.assertEqual(target_round(competition, 1104), (9, 1))
+        self.assertEqual(target_round(competition, 1105), (9, 2))
+
+    def test_target_odds_accumulator(self):
+        candidates = [
+            {"match_id": 1, "market": "12", "probability": .84, "odds": 1.25},
+            {"match_id": 2, "market": "over_1_5", "probability": .83, "odds": 1.25},
+            {"match_id": 3, "market": "under_3_5", "probability": .82, "odds": 1.30},
+        ]
+        result = build_combination(candidates, legs=None, target_odds=2.0)
+        self.assertEqual(len(result["legs"]), 3)
+        self.assertGreaterEqual(result["combined_odds"], 2.0)
+
+    def test_ten_odds_ticket_is_suppressed_when_short(self):
+        candidates = [
+            {"match_id": i, "market": "over_1_5", "probability": .80, "odds": 1.25}
+            for i in range(1, 6)
+        ]
+        result = build_combination(candidates, legs=None, target_odds=10.0, max_legs=20)
+        self.assertEqual(result["legs"], [])
+        self.assertEqual(result["combined_odds"], 0.0)
+
+    def test_duplicate_match_market_can_be_removed_before_build(self):
+        candidates = [
+            {"match_id": i, "market": "over_1_5", "probability": .80, "odds": 1.60}
+            for i in range(1, 7)
+        ]
+        existing = {(1, "over_1_5"), (2, "over_1_5")}
+        fresh = [c for c in candidates if (c["match_id"], c["market"]) not in existing]
+        result = build_combination(fresh, legs=None, target_odds=10.0, max_legs=20)
+        self.assertEqual(result["legs"], [])
+
+    def test_optimizer_prefers_the_highest_joint_probability(self):
+        candidates = [
+            {"match_id": 1, "market": "over_1_5", "probability": .90, "odds": 1.50},
+            {"match_id": 2, "market": "under_3_5", "probability": .88, "odds": 1.40},
+            {"match_id": 3, "market": "12", "probability": .83, "odds": 1.60},
+        ]
+        result = build_optimized_combination(candidates, .82, 2.0)
+        self.assertEqual([leg["match_id"] for leg in result["legs"]], [1, 2])
+        self.assertAlmostEqual(result["estimated_joint_probability"], .90 * .88)
+
+    def test_optimizer_rejects_a_low_joint_probability_ticket(self):
+        candidates = [
+            {"match_id": 1, "market": "12", "probability": .82, "odds": 1.50},
+            {"match_id": 2, "market": "under_3_5", "probability": .82, "odds": 1.40},
+        ]
+        result = build_optimized_combination(
+            candidates, .82, 2.0, joint_probability_floors={2: .70, 3: .50}
+        )
+        self.assertEqual(result["legs"], [])
+
+    def test_optimizer_enforces_maximum_ticket_odds(self):
+        candidates = [
+            {"match_id": 1, "market": "under_3_5", "probability": .84, "odds": 1.40},
+            {"match_id": 2, "market": "under_3_5", "probability": .84, "odds": 1.40},
+        ]
+        result = build_optimized_combination(candidates, .82, 1.50, 2, 2, {2: .67}, 1.70)
+        self.assertEqual(result["legs"], [])
+
+    def test_optimizer_can_require_different_leagues(self):
+        candidates = [
+            {"match_id": 1, "league": "A", "market": "12", "probability": .84, "odds": 1.24},
+            {"match_id": 2, "league": "A", "market": "12", "probability": .84, "odds": 1.24},
+        ]
+        result = build_optimized_combination(candidates, .82, 1.50, 2, 2, {2: .67}, 1.55, True)
+        self.assertEqual(result["legs"], [])
+
+    def test_market_pattern_filters(self):
+        features = dict.fromkeys(__import__("virtual_prediction_system").FEATURE_NAMES, 0.0)
+        features.update(expected_goals=2.30, home_market_rate=.80, away_market_rate=.76,
+                        h2h_rate=.85, ppg_diff=.35, elo_diff=.05)
+        vector = [features[name] for name in __import__("virtual_prediction_system").FEATURE_NAMES]
+        self.assertTrue(passes_market_pattern("under_3_5", vector))
+        self.assertTrue(passes_market_pattern("12", vector))
+        features["expected_goals"] = 2.50
+        vector = [features[name] for name in __import__("virtual_prediction_system").FEATURE_NAMES]
+        self.assertFalse(passes_market_pattern("under_3_5", vector))
+        self.assertTrue(passes_market_pattern("over_1_5", vector))
+        features["home_market_rate"] = .70
+        vector = [features[name] for name in __import__("virtual_prediction_system").FEATURE_NAMES]
+        self.assertFalse(passes_market_pattern("over_1_5", vector))
+
+    def test_forward_gate_requires_sample_and_positive_roi(self):
+        db = sqlite3.connect(":memory:")
+        db.execute("CREATE TABLE combinations(strategy TEXT,status TEXT,hit INTEGER,combined_odds REAL)")
+        old = os.environ.get("FORWARD_GATE_MIN_TICKETS")
+        os.environ["FORWARD_GATE_MIN_TICKETS"] = "3"
+        try:
+            db.executemany("INSERT INTO combinations VALUES('v2','settled',?,?)",
+                           [(1, 2.1), (0, 2.0)])
+            self.assertFalse(forward_gate(db, "v2")["open"])
+            db.execute("INSERT INTO combinations VALUES('v2','settled',1,2.1)")
+            self.assertTrue(forward_gate(db, "v2")["open"])
+        finally:
+            if old is None:
+                os.environ.pop("FORWARD_GATE_MIN_TICKETS", None)
+            else:
+                os.environ["FORWARD_GATE_MIN_TICKETS"] = old
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,29 @@
+{
+  "over_1_5": {
+    "train": 27000,
+    "test": 9000,
+    "brier": 0.19353616501930532,
+    "mean_probability": 0.753380234423179,
+    "actual_rate": 0.7352222222222222,
+    "selected_at_0_76": 4448,
+    "selected_hit_rate": 0.7695593525179856
+  },
+  "under_3_5": {
+    "train": 27000,
+    "test": 9000,
+    "brier": 0.19221490111506234,
+    "mean_probability": 0.7293117864312089,
+    "actual_rate": 0.7382222222222222,
+    "selected_at_0_76": 2140,
+    "selected_hit_rate": 0.7957943925233645
+  },
+  "12": {
+    "train": 27000,
+    "test": 9000,
+    "brier": 0.1826465637042874,
+    "mean_probability": 0.7509051693230522,
+    "actual_rate": 0.7628888888888888,
+    "selected_at_0_76": 4172,
+    "selected_hit_rate": 0.7732502396931927
+  }
+}

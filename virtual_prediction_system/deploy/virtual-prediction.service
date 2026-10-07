@@ -1,0 +1,22 @@
+[Unit]
+Description=Virtual football shadow prediction service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=virtualpredict
+Group=virtualpredict
+WorkingDirectory=/opt/virtual-prediction
+EnvironmentFile=/opt/virtual-prediction/.env
+ExecStart=/opt/virtual-prediction/.venv/bin/python live_runner.py
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/virtual-prediction/data
+
+[Install]
+WantedBy=multi-user.target
