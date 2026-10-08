@@ -73,6 +73,63 @@ def clean(value: Any) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def classify_ticket_response(status: int, payload: Any) -> dict[str, Any]:
+    """Classify Bet9ja's ticket API response without relying on UI wording."""
+    flattened: dict[str, list[Any]] = {}
+
+    def visit(value: Any, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                visit(child, clean(child_key).lower().replace("_", ""))
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, key)
+        elif key:
+            flattened.setdefault(key, []).append(value)
+
+    visit(payload)
+    searchable = clean(json.dumps(payload, ensure_ascii=False)).lower()
+    rejection_terms = (
+        "rejected", "declined", "failed", "failure", "insufficient funds",
+        "invalid stake", "odds changed", "selection closed", "event closed",
+        "not accepted", "error",
+    )
+    success_terms = ("accepted", "success", "successful", "placed", "created")
+    status_values = [clean(value).lower() for value in flattened.get("status", [])]
+    success_values = flattened.get("success", []) + flattened.get("ok", [])
+    identifier_keys = (
+        "ticketid", "ticketcode", "bookingcode", "couponid", "betslipid", "id",
+    )
+    ticket_id = next(
+        (
+            clean(value)
+            for key in identifier_keys
+            for value in flattened.get(key, [])
+            if clean(value)
+        ),
+        None,
+    )
+    rejected = (
+        status >= 400
+        or any(value is False for value in success_values)
+        or any(term in searchable for term in rejection_terms)
+    )
+    accepted = (
+        200 <= status < 300
+        and not rejected
+        and (
+            ticket_id is not None
+            or any(value is True for value in success_values)
+            or any(any(term in value for term in success_terms) for value in status_values)
+        )
+    )
+    return {
+        "state": "rejected" if rejected else "accepted" if accepted else "uncertain",
+        "http_status": status,
+        "ticket_id": ticket_id,
+    }
+
+
 def comparable(value: Any) -> str:
     normalized = unicodedata.normalize("NFKD", clean(value).lower())
     normalized = "".join(char for char in normalized if not unicodedata.combining(char))
@@ -655,7 +712,7 @@ class Bet9jaBrowser:
             return "<unparseable-url>"
 
     @classmethod
-    def _safe_text(cls, value: Any) -> str:
+    def _safe_text(cls, value: Any, limit: int = 500) -> str:
         text = str(value)
         text = re.sub(
             r"https?://[^\s\"']+",
@@ -667,7 +724,7 @@ class Bet9jaBrowser:
             r"\1=<redacted>",
             text,
         )
-        return text[:500]
+        return text[:limit]
 
     def _diagnostic(self, event: str, **details: Any) -> None:
         self.diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -873,11 +930,20 @@ class Bet9jaBrowser:
             self.page.screenshot(path=str(Path(screenshot).resolve()), full_page=True)
         submitted = False
         submission_verified = False
+        submission_evidence: dict[str, Any] | None = None
         if submit:
             if os.getenv("BET9JA_ALLOW_REAL_BET") != "true":
                 raise RuntimeError(
                     "Submission blocked: set BET9JA_ALLOW_REAL_BET=true as well as requesting submit"
                 )
+            ticket_responses: list[Any] = []
+
+            def capture_ticket_response(response: Any) -> None:
+                url = response.url.lower().split("?", 1)[0].rstrip("/")
+                if url.endswith("/tickets") and response.request.method.upper() != "GET":
+                    ticket_responses.append(response)
+
+            self.page.on("response", capture_ticket_response)
             place_bet_button.click()
             submitted = True
             confirmation_deadline = time.monotonic() + 30
@@ -885,19 +951,68 @@ class Bet9jaBrowser:
                 "bet placed", "bet accepted", "successfully placed",
                 "ticket accepted", "booking code",
             )
-            while time.monotonic() < confirmation_deadline:
-                visible_text = " ".join(
-                    clean(frame.locator("body").inner_text()).lower()
-                    for frame in virtual_frames(self.page)
-                    if frame.locator("body").count()
-                )
-                if betslip_count(self.page) == 0 or any(
-                    term in visible_text for term in confirmation_terms
-                ):
-                    submission_verified = True
-                    break
-                self.page.wait_for_timeout(250)
+            try:
+                processed_responses = 0
+                while time.monotonic() < confirmation_deadline:
+                    while processed_responses < len(ticket_responses):
+                        response = ticket_responses[processed_responses]
+                        processed_responses += 1
+                        try:
+                            response.finished()
+                            try:
+                                payload = response.json()
+                            except Exception:
+                                payload = {"raw": self._safe_text(response.text())}
+                        except Exception as error:
+                            payload = {"response_read_error": self._safe_text(error)}
+                        submission_evidence = classify_ticket_response(response.status, payload)
+                        self._diagnostic(
+                            "ticket_submission_response",
+                            **submission_evidence,
+                            payload=self._safe_text(payload, limit=4000),
+                        )
+                        if submission_evidence["state"] == "rejected":
+                            raise RuntimeError(
+                                "Bet9ja rejected the wager"
+                                + (
+                                    f" (HTTP {submission_evidence['http_status']})"
+                                    if submission_evidence.get("http_status") else ""
+                                )
+                            )
+                        if submission_evidence["state"] == "accepted":
+                            submission_verified = True
+                            break
+                    if submission_verified:
+                        break
+                    visible_text = " ".join(
+                        clean(frame.locator("body").inner_text()).lower()
+                        for frame in virtual_frames(self.page)
+                        if frame.locator("body").count()
+                    )
+                    if betslip_count(self.page) == 0 or any(
+                        term in visible_text for term in confirmation_terms
+                    ):
+                        submission_verified = True
+                        submission_evidence = submission_evidence or {
+                            "state": "accepted", "source": "ui",
+                        }
+                        break
+                    self.page.wait_for_timeout(250)
+            finally:
+                self.page.remove_listener("response", capture_ticket_response)
             if not submission_verified:
+                failure_artifact = self.diagnostics_path.with_name(
+                    f"bet9ja_submission_uncertain_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"
+                )
+                try:
+                    self.page.screenshot(path=str(failure_artifact.resolve()), full_page=True)
+                except Exception as error:
+                    self._diagnostic("submission_screenshot_failed", error=self._safe_text(error))
+                self._diagnostic(
+                    "ticket_submission_uncertain",
+                    evidence=submission_evidence,
+                    screenshot=str(failure_artifact),
+                )
                 raise RuntimeError(
                     "Place Bet was clicked, but Bet9ja did not provide an "
                     "acceptance confirmation within 30 seconds; do not retry "
@@ -912,6 +1027,7 @@ class Bet9jaBrowser:
             "selections": marked,
             "place_bet_found": True,
             "submission_verified": submission_verified,
+            "submission_evidence": submission_evidence,
             "elapsed_seconds": round(time.monotonic() - started_at, 3),
         }
 

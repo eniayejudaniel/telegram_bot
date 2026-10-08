@@ -4,9 +4,27 @@ import sqlite3
 
 from prediction_engine import FEATURE_NAMES, LogisticModel, build_combination, build_optimized_combination
 from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
+from bet9ja_virtual_betslip import classify_ticket_response
 
 
 class PredictionSystemTests(unittest.TestCase):
+    def test_ticket_response_accepts_ticket_identifier(self):
+        result = classify_ticket_response(200, {"ticket": {"id": "ABC123"}})
+        self.assertEqual(result["state"], "accepted")
+        self.assertEqual(result["ticket_id"], "ABC123")
+
+    def test_ticket_response_accepts_explicit_success(self):
+        result = classify_ticket_response(201, {"success": True, "status": "placed"})
+        self.assertEqual(result["state"], "accepted")
+
+    def test_ticket_response_rejects_business_error_with_http_200(self):
+        result = classify_ticket_response(200, {"success": False, "message": "Insufficient funds"})
+        self.assertEqual(result["state"], "rejected")
+
+    def test_ticket_response_keeps_unrecognized_200_uncertain(self):
+        result = classify_ticket_response(200, {"message": "request received"})
+        self.assertEqual(result["state"], "uncertain")
+
     def test_combination_uses_one_market_per_match(self):
         candidates = [
             {"match_id": 1, "market": "12", "probability": 0.84, "odds": 1.25},
