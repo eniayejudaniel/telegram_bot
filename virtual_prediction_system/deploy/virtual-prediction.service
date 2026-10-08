@@ -1,5 +1,5 @@
 [Unit]
-Description=Virtual football shadow prediction service
+Description=Virtual football prediction alert service
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ User=virtualpredict
 Group=virtualpredict
 WorkingDirectory=/opt/virtual-prediction
 EnvironmentFile=/opt/virtual-prediction/.env
-ExecStart=/opt/virtual-prediction/.venv/bin/python live_runner.py
+ExecStart=/usr/bin/xvfb-run -a /opt/virtual-prediction/.venv/bin/python live_runner.py
 Restart=always
 RestartSec=10
 NoNewPrivileges=true

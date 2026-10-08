@@ -23,11 +23,13 @@ class PredictionSystemTests(unittest.TestCase):
         self.assertGreater(model.predict([10]), 0.999)
         self.assertLess(model.predict([-10]), 0.001)
 
-    def test_target_round_moves_past_betstop(self):
+    def test_target_round_moves_at_actual_kickoff(self):
         competition = {"competition_id": 9, "start_datetime": 1000, "end_datetime": 7720}
         self.assertEqual(target_round(competition, 1060), (9, 1))
-        self.assertEqual(target_round(competition, 1104), (9, 1))
-        self.assertEqual(target_round(competition, 1105), (9, 2))
+        self.assertEqual(target_round(competition, 1119), (9, 1))
+        self.assertEqual(target_round(competition, 1120), (9, 2))
+        self.assertEqual(target_round(competition, 1339), (9, 2))
+        self.assertEqual(target_round(competition, 1340), (9, 3))
 
     def test_target_odds_accumulator(self):
         candidates = [
@@ -93,6 +95,19 @@ class PredictionSystemTests(unittest.TestCase):
         ]
         result = build_optimized_combination(candidates, .82, 1.50, 2, 2, {2: .67}, 1.55, True)
         self.assertEqual(result["legs"], [])
+
+    def test_optimizer_can_require_same_league_with_mixed_markets(self):
+        candidates = [
+            {"match_id": 1, "league": "Bundesliga", "market": "12", "probability": .84, "odds": 1.25},
+            {"match_id": 2, "league": "Bundesliga", "market": "under_3_5", "probability": .83, "odds": 1.22},
+            {"match_id": 3, "league": "Euro League", "market": "under_3_5", "probability": .95, "odds": 1.22},
+        ]
+        result = build_optimized_combination(
+            candidates, .82, 1.50, 2, 2, {2: .67}, 1.55,
+            require_same_league=True,
+        )
+        self.assertEqual({"Bundesliga"}, {leg["league"] for leg in result["legs"]})
+        self.assertEqual({"12", "under_3_5"}, {leg["market"] for leg in result["legs"]})
 
     def test_market_pattern_filters(self):
         features = dict.fromkeys(__import__("virtual_prediction_system").FEATURE_NAMES, 0.0)

@@ -233,6 +233,7 @@ def build_optimized_combination(
     joint_probability_floors: dict[int, float] | None = None,
     maximum_odds: float | None = None,
     require_distinct_leagues: bool = False,
+    require_same_league: bool = False,
 ) -> dict:
     """Return the highest-probability ticket satisfying every hard constraint."""
     floors = joint_probability_floors or {2: 0.60, 3: 0.45}
@@ -241,6 +242,8 @@ def build_optimized_combination(
     for size in range(min_legs, max_legs + 1):
         for legs in itertools.combinations(eligible, size):
             if len({leg["match_id"] for leg in legs}) != size:
+                continue
+            if require_same_league and len({leg["league"] for leg in legs}) != 1:
                 continue
             if require_distinct_leagues and len({leg["league"] for leg in legs}) != size:
                 continue

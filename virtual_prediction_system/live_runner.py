@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import json
 import hashlib
+import atexit
 import logging
 import os
 import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
+
+from bet9ja_virtual_betslip import Bet9jaBrowser
 
 from virtual_prediction_system import (
     FEATURE_NAMES,
@@ -80,16 +84,16 @@ def target_round(competition: dict, server_time: int) -> tuple[int, int] | None:
     start, end = int(competition["start_datetime"]), int(competition["end_datetime"])
     if not start <= server_time < end:
         return None
-    elapsed = server_time - start
-    if elapsed < 60:
-        return int(competition["competition_id"]), 1
-    round_index = min(29, max(0, (elapsed - 60) // 220))
-    phase = (elapsed - 60) % 220
-    if phase >= 45:
-        round_index += 1
-    if round_index >= 30:
+    # Each season's first kickoff is start+120 and later kickoffs are 220
+    # seconds apart. The betting UI moves on as soon as a kickoff occurs, so
+    # select the first round whose kickoff is still in the future.
+    first_kickoff = start + 120
+    round_no = 1 if server_time < first_kickoff else (
+        (server_time - first_kickoff) // 220 + 2
+    )
+    if round_no > 30:
         return None
-    return int(competition["competition_id"]), int(round_index + 1)
+    return int(competition["competition_id"]), int(round_no)
 
 
 def next_fixtures(league: str, product: str) -> list[dict]:
@@ -156,12 +160,19 @@ class Telegram:
         self.base = f"https://api.telegram.org/bot{token}"
         self.db = db
         self.admin_user_ids = admin_user_ids
+        placeholders = ",".join("?" for _ in admin_user_ids)
+        self.db.execute(
+            f"UPDATE telegram_subscribers SET active=0 WHERE user_id NOT IN ({placeholders})",
+            tuple(sorted(admin_user_ids)),
+        )
+        self.db.commit()
         for admin_id in admin_user_ids:
             self._subscribe(admin_id, admin_id, "configured_admin", is_admin=True)
         if chat_id:
             try:
                 legacy_id = int(chat_id)
-                self._subscribe(legacy_id, legacy_id, "legacy", is_admin=legacy_id in admin_user_ids)
+                if legacy_id in admin_user_ids:
+                    self._subscribe(legacy_id, legacy_id, "legacy", is_admin=True)
             except ValueError:
                 logging.warning("Ignoring invalid TELEGRAM_CHAT_ID")
 
@@ -231,12 +242,11 @@ class Telegram:
             command, *arguments = text.split(maxsplit=1)
             command = command.split("@", 1)[0].lower()
             if command == "/start":
-                invite = arguments[0].strip() if arguments else ""
-                if self._is_admin(user_id) or self._known_subscriber(user_id) or self._valid_invite(invite):
-                    self._subscribe(user_id, chat_id, username, self._is_admin(user_id))
+                if self._is_admin(user_id):
+                    self._subscribe(user_id, chat_id, username, True)
                     self._send_to(chat_id, "Access approved. You will now receive prediction alerts. Use /stop to unsubscribe.")
                 else:
-                    self._send_to(chat_id, f"Access denied. Ask the administrator for a valid invitation. Your Telegram ID is {user_id}.")
+                    logging.info("Ignored non-admin Telegram /start from user_id=%s", user_id)
             elif command == "/stop":
                 self.db.execute("UPDATE telegram_subscribers SET active=0,updated_at=? WHERE user_id=?",
                                 (datetime.now(timezone.utc).isoformat(), user_id))
@@ -268,8 +278,10 @@ class Telegram:
         self.db.commit()
 
     def send(self, text: str) -> None:
+        placeholders = ",".join("?" for _ in self.admin_user_ids)
         recipients = self.db.execute(
-            "SELECT chat_id FROM telegram_subscribers WHERE active=1"
+            f"SELECT chat_id FROM telegram_subscribers WHERE active=1 AND user_id IN ({placeholders})",
+            tuple(sorted(self.admin_user_ids)),
         ).fetchall()
         if not recipients:
             logging.warning("No authorized Telegram subscribers")
@@ -458,7 +470,7 @@ def summary(db: sqlite3.Connection) -> str:
     target = float(os.getenv("TARGET_COMBINED_ODDS", "2.00"))
     strategy = os.getenv("STRATEGY_NAME", "conservative_2odds_v1")
     pending = db.execute("SELECT COUNT(*) FROM predictions WHERE status='pending'").fetchone()[0]
-    lines = ["Shadow-test performance", f"Pending selections: {pending}", "", "By market:"]
+    lines = ["Daily ticket summary", f"Pending selections: {pending}", "", "By market:"]
     rows = db.execute(
         "SELECT market,COUNT(*),SUM(hit),SUM(CASE WHEN hit=1 THEN odds-1 ELSE -1 END) "
         "FROM predictions WHERE status='settled' AND strategy=? GROUP BY market", (strategy,)
@@ -476,9 +488,7 @@ def summary(db: sqlite3.Connection) -> str:
         "FROM combinations WHERE status='settled' AND combined_odds>=? AND strategy=?",
         (target, strategy),
     ).fetchone()
-    gate = forward_gate(db, strategy)
     lines.extend(["", f"Strategy: {strategy}",
-                  f"Forward gate: {'OPEN' if gate['open'] else 'CLOSED'} ({gate['total']}/{gate['minimum']} settled, ROI {gate['roi']:+.2%})",
                   f"Accas ≥{target:.2f}: {combo[1]}/{combo[0]} won"
                   + (f" ({100 * combo[1] / combo[0]:.2f}%), flat ROI {100 * combo[2] / combo[0]:+.2f}%" if combo[0] else "")])
     return "\n".join(lines)
@@ -486,7 +496,7 @@ def summary(db: sqlite3.Connection) -> str:
 
 def combination_result_message(combo: dict) -> str:
     heading = "✅ ACCA WON" if combo["hit"] else "❌ ACCA LOST"
-    lines = ["SHADOW TEST RESULT — NO STAKE", f"{heading} — #{combo['id']}",
+    lines = ["TICKET SETTLEMENT", f"{heading} — #{combo['id']}",
              f"Strategy: {combo['strategy']}", f"Total odds: {combo['odds']:.2f}"]
     for _, market, home, away, _, hg, ag, hit, _ in combo["legs"]:
         icon = "✅" if hit else "❌"
@@ -511,7 +521,13 @@ def passes_market_pattern(market: str, features: list[float]) -> bool:
     return False
 
 
-def run_once(db: sqlite3.Connection, telegram: Telegram, models: dict, state: RollingFeatures) -> int:
+def run_once(
+    db: sqlite3.Connection,
+    telegram: Telegram,
+    models: dict,
+    state: RollingFeatures,
+    bet_browser: Bet9jaBrowser | None = None,
+) -> int:
     thresholds = {
         "over_1_5": float(os.getenv("MIN_PROB_OVER_1_5", "0.76")),
         "under_3_5": float(os.getenv("MIN_PROB_UNDER_3_5", "0.76")),
@@ -557,19 +573,20 @@ def run_once(db: sqlite3.Connection, telegram: Telegram, models: dict, state: Ro
     target = float(os.getenv("TARGET_COMBINED_ODDS", "2.00"))
     strategy = os.getenv("STRATEGY_NAME", "conservative_2odds_v1")
     min_legs = int(os.getenv("MIN_COMBINATION_LEGS", "2"))
-    # Build each market independently so a ticket never mixes Under 3.5 and 12.
+    # Bet9ja virtual competitions use separate betslips. Build within one league,
+    # while allowing either matching or mixed markets on different fixtures.
     options = []
-    for market in sorted(allowed_markets):
+    for league in LEAGUES:
         option = build_optimized_combination(
-            [item for item in candidates if item["market"] == market],
-            minimum_probability=thresholds[market], target_odds=target,
+            [item for item in candidates if item["league"] == league],
+            minimum_probability=min(thresholds.values()), target_odds=target,
             min_legs=min_legs, max_legs=int(os.getenv("MAX_COMBINATION_LEGS", "2")),
             joint_probability_floors={
                 2: float(os.getenv("MIN_JOINT_PROB_2_LEGS", "0.67")),
                 3: float(os.getenv("MIN_JOINT_PROB_3_LEGS", "0.45")),
             },
             maximum_odds=float(os.getenv("MAX_COMBINED_ODDS", "1.55")),
-            require_distinct_leagues=os.getenv("REQUIRE_DISTINCT_LEAGUES", "true").lower() == "true",
+            require_same_league=True,
         )
         if option["legs"]:
             options.append(option)
@@ -590,7 +607,9 @@ def run_once(db: sqlite3.Connection, telegram: Telegram, models: dict, state: Ro
         joint = math_prod(item["probability"] for item in inserted)
         # Final invariant: the legs actually written to SQLite—not the proposed
         # candidate list—must independently satisfy the configured ticket rule.
-        if (len(inserted) < min_legs or combined_odds + 1e-9 < target
+        if (len(inserted) < min_legs or len({item["league"] for item in inserted}) != 1
+                or len({item["match_id"] for item in inserted}) != len(inserted)
+                or combined_odds + 1e-9 < target
                 or combined_odds - 1e-9 > float(os.getenv("MAX_COMBINED_ODDS", "1.55"))):
             db.executemany("DELETE FROM predictions WHERE id=?", [(value,) for value in inserted_ids])
             db.commit()
@@ -604,20 +623,35 @@ def run_once(db: sqlite3.Connection, telegram: Telegram, models: dict, state: Ro
             (now, json.dumps([x["match_id"] for x in inserted]), json.dumps([x["market"] for x in inserted]), combined_odds, joint, strategy),
         )
         db.commit()
-        gate = forward_gate(db, strategy)
-        ticket_market = inserted[0]["market"]
-        lines = ["SHADOW TEST — NO STAKE", f"New {ticket_market} validation ACCA ({target:.2f}–{float(os.getenv('MAX_COMBINED_ODDS', '999')):.2f})",
+        ticket_markets = sorted({item["market"] for item in inserted})
+        market_label = ticket_markets[0] if len(ticket_markets) == 1 else "mixed markets"
+        ticket_league = inserted[0]["league"]
+        lines = ["NEW QUALIFYING TICKET", f"{ticket_league} - {market_label} ACCA ({target:.2f}-{float(os.getenv('MAX_COMBINED_ODDS', '999')):.2f})",
                  f"Strategy: {strategy}"]
         for item in inserted:
             lines.append(f"{item['league']}: {item['home']} vs {item['away']} — {item['market']} @ {item['odds']:.2f} — model {item['probability']:.1%}")
         lines.append(f"Combined odds: {combined_odds:.2f}")
         lines.append(f"Raw model joint estimate: {joint:.1%} (historically overconfident)")
-        lines.append(f"Forward gate: {gate['total']}/{gate['minimum']} settled — {'OPEN' if gate['open'] else 'CLOSED'}")
-        if gate["open"] or os.getenv("REPORT_SHADOW_TICKETS", "false").lower() == "true":
-            telegram.send("\n".join(lines))
-        else:
-            logging.info("ticket %s stored silently; forward gate %s/%s ROI=%+.2f%%",
-                         combined_odds, gate["total"], gate["minimum"], 100 * gate["roi"])
+        ticket_message = "\n".join(lines)
+        if os.getenv("BET9JA_AUTO_BET", "false").lower() == "true":
+            test_mode = os.getenv("BET9JA_TEST_MODE", "false").lower() == "true"
+            dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
+            stake = float(os.getenv("BET9JA_TEST_STAKE", "100")) if test_mode else None
+            try:
+                if bet_browser is None:
+                    raise RuntimeError("Bet9ja warm browser service is unavailable")
+                bet_result = bet_browser.prepare(
+                    ticket_message,
+                    stake=stake,
+                    submit=not dry_run,
+                )
+                lines.append(
+                    f"Bet automation: {bet_result['mode']} — stake ₦{bet_result['stake']:,.2f}"
+                )
+            except Exception as error:
+                logging.exception("Bet9ja bet automation failed")
+                lines.append(f"Bet automation: FAILED — {error}")
+        telegram.send("\n".join(lines))
     return len(inserted)
 
 
@@ -643,24 +677,44 @@ def main() -> None:
     if not admin_user_ids:
         raise SystemExit("TELEGRAM_ADMIN_USER_IDS must contain at least one numeric Telegram user ID")
     telegram = Telegram(token, db, admin_user_ids, os.getenv("TELEGRAM_CHAT_ID", ""))
-    poll_seconds = max(10, int(os.getenv("POLL_SECONDS", "15")))
-    logging.info("Live shadow runner started; send /start to the Telegram bot if chat ID is blank")
+    bet_browser = None
+    if os.getenv("BET9JA_AUTO_BET", "false").lower() == "true":
+        bet_browser = Bet9jaBrowser(
+            headless=os.getenv("BET9JA_HEADLESS", "false").lower() == "true",
+            env_file=ROOT / ".env",
+            profile_dir=ROOT / os.getenv(
+                "BET9JA_PROFILE_DIR", "data/bet9ja_playwright_profile"
+            ),
+            ticket_timeout_seconds=float(os.getenv("BET9JA_TICKET_TIMEOUT_SECONDS", "75")),
+            cdp_url=os.getenv("BET9JA_CDP_URL", "").strip() or None,
+        )
+        atexit.register(bet_browser.close)
+        try:
+            bet_browser.start()
+            logging.info("Bet9ja browser is authenticated and warm")
+        except Exception:
+            logging.exception("Initial Bet9ja browser warm-up failed; retrying during poll cycles")
+    poll_seconds = max(3, int(os.getenv("POLL_SECONDS", "5")))
+    logging.info("Live prediction runner started; send /start to the Telegram bot if chat ID is blank")
     last_summary_day = None
+    local_tz = ZoneInfo(os.getenv("REPORT_TIMEZONE", "Africa/Lagos"))
+    summary_hour = int(os.getenv("DAILY_SUMMARY_HOUR", "20"))
     while True:
         try:
+            if bet_browser is not None:
+                bet_browser.keep_warm()
             telegram.process_updates()
             settled = settle(db, state)
             target = float(os.getenv("TARGET_COMBINED_ODDS", "2.00"))
             strategy = os.getenv("STRATEGY_NAME", "conservative_2odds_v1")
-            gate = forward_gate(db, strategy)
             for combo in settle_combinations(db):
-                report_shadow = os.getenv("REPORT_SHADOW_TICKETS", "false").lower() == "true"
-                if combo["odds"] >= target and combo["strategy"] == strategy and (gate["open"] or report_shadow):
+                if combo["odds"] >= target and combo["strategy"] == strategy:
                     telegram.send(combination_result_message(combo))
-            created = run_once(db, telegram, models, state)
+            created = run_once(db, telegram, models, state, bet_browser)
             logging.info("cycle complete: predictions=%s settled=%s", created, settled)
-            day = datetime.now(timezone.utc).date()
-            if day != last_summary_day and datetime.now(timezone.utc).hour == 20:
+            local_now = datetime.now(local_tz)
+            day = local_now.date()
+            if day != last_summary_day and local_now.hour == summary_hour:
                 telegram.send(summary(db)); last_summary_day = day
         except Exception:
             logging.exception("poll cycle failed")
