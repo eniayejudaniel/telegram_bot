@@ -1,17 +1,19 @@
 # Virtual Predictor Hub
 
-`virtual_predictor_hub` is the shared home for virtual-sports prediction
-engines and bookmaker integrations. The current production integration is the
-Bet9ja virtual bot; additional bookmakers can be added without coupling their
-browser automation to the prediction engine.
+`virtual_predictor_hub` is the shared home for independent virtual-sports
+bookmaker bots. Each bookmaker owns its prediction code, configuration,
+runtime data, browser automation, tests, and deployment files.
 
 ## Structure
 
-- `prediction_engine.py` — shared models, rolling features, and combination optimizer.
-- `bet9ja_virtual_bot.py` — Bet9ja polling, ticket generation, Telegram alerts, and orchestration.
-- `bet9ja_virtual_betslip.py` — authenticated browser and betslip automation.
-- `vfb_market_data/` — trained models and virtual-football reference data.
-- `deploy/bet9ja-virtual-bot.service` — OVH systemd unit using headed Chromium under Xvfb.
+- `bet9ja_virtual_bot/` — complete Bet9ja predictor and betting integration.
+- `bet9ja_virtual_bot/prediction_engine.py` — models, features, and combination optimizer.
+- `bet9ja_virtual_bot/bet9ja_virtual_bot.py` — polling, alerts, and orchestration.
+- `bet9ja_virtual_bot/bet9ja_virtual_betslip.py` — browser and betslip automation.
+
+Future integrations should be siblings, for example
+`virtual_predictor_hub/sportybet_virtual_bot/`, without importing private
+Bet9ja modules or sharing bookmaker credentials.
 
 The Bet9ja bot covers Bundesliga, Euro League, and English League with
 `over_1_5`, `under_3_5`, and `12` selections. Every accumulator is restricted
@@ -20,6 +22,7 @@ to one league and different matches, with combined odds between 1.50 and 1.55.
 ## Local setup
 
 ```powershell
+Set-Location virtual_predictor_hub\bet9ja_virtual_bot
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 playwright install chromium
@@ -51,13 +54,13 @@ reliably with Chromium's headless shell.
 
 ```bash
 sudo useradd --system --home /opt/virtual-predictor-hub --shell /usr/sbin/nologin virtualpredict
-sudo mkdir -p /opt/virtual-predictor-hub/data
+sudo mkdir -p /opt/virtual-predictor-hub/bet9ja_virtual_bot/data
 sudo chown -R virtualpredict:virtualpredict /opt/virtual-predictor-hub
-sudo -u virtualpredict python3 -m venv /opt/virtual-predictor-hub/.venv
-sudo -u virtualpredict /opt/virtual-predictor-hub/.venv/bin/pip install -r /opt/virtual-predictor-hub/requirements.txt
-sudo /opt/virtual-predictor-hub/.venv/bin/playwright install-deps chromium
-sudo -u virtualpredict /opt/virtual-predictor-hub/.venv/bin/playwright install chromium
-sudo cp deploy/bet9ja-virtual-bot.service /etc/systemd/system/
+sudo -u virtualpredict python3 -m venv /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv
+sudo -u virtualpredict /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv/bin/pip install -r /opt/virtual-predictor-hub/bet9ja_virtual_bot/requirements.txt
+sudo /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv/bin/playwright install-deps chromium
+sudo -u virtualpredict /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv/bin/playwright install chromium
+sudo cp bet9ja_virtual_bot/deploy/bet9ja-virtual-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now bet9ja-virtual-bot
 sudo journalctl -u bet9ja-virtual-bot -f
