@@ -2,8 +2,8 @@ import unittest
 import os
 import sqlite3
 
-from virtual_prediction_system import LogisticModel, build_combination, build_optimized_combination
-from live_runner import forward_gate, passes_market_pattern, target_round
+from prediction_engine import FEATURE_NAMES, LogisticModel, build_combination, build_optimized_combination
+from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
 
 
 class PredictionSystemTests(unittest.TestCase):
@@ -110,18 +110,18 @@ class PredictionSystemTests(unittest.TestCase):
         self.assertEqual({"12", "under_3_5"}, {leg["market"] for leg in result["legs"]})
 
     def test_market_pattern_filters(self):
-        features = dict.fromkeys(__import__("virtual_prediction_system").FEATURE_NAMES, 0.0)
+        features = dict.fromkeys(FEATURE_NAMES, 0.0)
         features.update(expected_goals=2.30, home_market_rate=.80, away_market_rate=.76,
                         h2h_rate=.85, ppg_diff=.35, elo_diff=.05)
-        vector = [features[name] for name in __import__("virtual_prediction_system").FEATURE_NAMES]
+        vector = [features[name] for name in FEATURE_NAMES]
         self.assertTrue(passes_market_pattern("under_3_5", vector))
         self.assertTrue(passes_market_pattern("12", vector))
         features["expected_goals"] = 2.50
-        vector = [features[name] for name in __import__("virtual_prediction_system").FEATURE_NAMES]
+        vector = [features[name] for name in FEATURE_NAMES]
         self.assertFalse(passes_market_pattern("under_3_5", vector))
         self.assertTrue(passes_market_pattern("over_1_5", vector))
         features["home_market_rate"] = .70
-        vector = [features[name] for name in __import__("virtual_prediction_system").FEATURE_NAMES]
+        vector = [features[name] for name in FEATURE_NAMES]
         self.assertFalse(passes_market_pattern("over_1_5", vector))
 
     def test_forward_gate_requires_sample_and_positive_roi(self):

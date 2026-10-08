@@ -7,7 +7,7 @@ import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
-from virtual_prediction_system import LogisticModel, MARKETS, feature_dataset
+from prediction_engine import LogisticModel, MARKETS, feature_dataset
 
 
 ROOT = Path(__file__).resolve().parent

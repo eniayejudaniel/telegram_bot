@@ -8,7 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from analyze_100_season_markets import load_all, wilson
-from virtual_prediction_system import FEATURE_NAMES, LogisticModel, RollingFeatures
+from prediction_engine import FEATURE_NAMES, LogisticModel, RollingFeatures
 
 
 ROOT = Path(__file__).resolve().parent

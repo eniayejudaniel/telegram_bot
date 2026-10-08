@@ -5,8 +5,8 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-from live_runner import DB_PATH, MODEL_PATH, MODEL_QUALITY_PATH, load_env, observed_rows
-from virtual_prediction_system import LogisticModel, feature_dataset
+from bet9ja_virtual_bot import DB_PATH, MODEL_PATH, MODEL_QUALITY_PATH, load_env, observed_rows
+from prediction_engine import LogisticModel, feature_dataset
 
 
 def main() -> None:

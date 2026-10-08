@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from analyze_100_season_markets import load_all
-from virtual_prediction_system import LogisticModel, feature_dataset
+from prediction_engine import LogisticModel, feature_dataset
 
 
 ROOT = Path(__file__).resolve().parent

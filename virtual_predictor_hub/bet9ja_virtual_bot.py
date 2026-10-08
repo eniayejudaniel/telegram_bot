@@ -1,4 +1,4 @@
-"""Live shadow-test runner for Bet9ja/Sportradar virtual football."""
+"""Production runner for Bet9ja virtual predictions, alerts, and bet placement."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import requests
 
 from bet9ja_virtual_betslip import Bet9jaBrowser
 
-from virtual_prediction_system import (
+from prediction_engine import (
     FEATURE_NAMES,
     LogisticModel,
     MARKETS,

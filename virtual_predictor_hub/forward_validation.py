@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 
-from virtual_prediction_system import LogisticModel, feature_dataset, load_rows, mean
+from prediction_engine import LogisticModel, feature_dataset, load_rows, mean
 
 
 ROOT = Path(__file__).resolve().parent
