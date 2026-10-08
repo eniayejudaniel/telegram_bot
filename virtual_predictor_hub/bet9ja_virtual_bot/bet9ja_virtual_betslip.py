@@ -1029,6 +1029,9 @@ class Bet9jaBrowser:
                 raise RuntimeError(
                     "Place Bet button was not found after preparing the betslip"
                 )
+            # Confirm that Playwright considers the control visible, stable,
+            # enabled and unobscured without dispatching the irreversible click.
+            place_bet_button.click(trial=True, timeout=5_000)
         except Exception as error:
             failure_artifact = self.diagnostics_path.with_name(
                 f"bet9ja_pre_submission_failure_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"

@@ -729,13 +729,22 @@ def main() -> None:
                         logging.exception(
                             "Bet9ja browser recovery failed; polling will continue"
                         )
-            telegram.process_updates()
+            try:
+                telegram.process_updates()
+            except Exception:
+                # Telegram availability must never gate time-sensitive betting.
+                logging.exception("Telegram update polling failed; continuing cycle")
             settled = settle(db, state)
             target = float(os.getenv("TARGET_COMBINED_ODDS", "2.00"))
             strategy = os.getenv("STRATEGY_NAME", "conservative_2odds_v1")
             for combo in settle_combinations(db):
                 if combo["odds"] >= target and combo["strategy"] == strategy:
-                    telegram.send(combination_result_message(combo))
+                    try:
+                        telegram.send(combination_result_message(combo))
+                    except Exception:
+                        logging.exception(
+                            "Telegram settlement alert failed; continuing cycle"
+                        )
             created = run_once(db, telegram, models, state, bet_browser)
             logging.info("cycle complete: predictions=%s settled=%s", created, settled)
             local_now = datetime.now(local_tz)
