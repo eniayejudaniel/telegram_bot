@@ -1,13 +1,24 @@
 import unittest
 import os
 import sqlite3
+from types import SimpleNamespace
 
 from prediction_engine import FEATURE_NAMES, LogisticModel, build_combination, build_optimized_combination
 from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
-from bet9ja_virtual_betslip import classify_ticket_response
+from bet9ja_virtual_betslip import classify_ticket_response, frame_matches_league
 
 
 class PredictionSystemTests(unittest.TestCase):
+    def test_virtual_frame_is_bound_to_requested_league(self):
+        english = SimpleNamespace(
+            url="https://vflive-vs001.akamaized.net/vfel/desktop/index"
+        )
+        bundesliga = SimpleNamespace(
+            url="https://vflive-vs001.akamaized.net/vfb/desktop/index"
+        )
+        self.assertTrue(frame_matches_league(english, "English League"))
+        self.assertFalse(frame_matches_league(bundesliga, "English League"))
+
     def test_ticket_response_accepts_ticket_identifier(self):
         result = classify_ticket_response(200, {"ticket": {"id": "ABC123"}})
         self.assertEqual(result["state"], "accepted")

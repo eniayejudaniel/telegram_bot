@@ -33,6 +33,11 @@ SUPPORTED_LEAGUES = {
     "euro league": "Euro League",
     "english league": "English League",
 }
+LEAGUE_FRAME_PATHS = {
+    "Bundesliga": "/vfb/",
+    "Euro League": "/vflm/",
+    "English League": "/vfel/",
+}
 MARKET_LABELS = {
     "under_3_5": ("under 3.5", "under_3_5", "u 3.5"),
     "over_1_5": ("over 1.5", "over_1_5", "o 1.5"),
@@ -49,6 +54,10 @@ SELECTION_PATTERN = re.compile(
     r"(\d+(?:\.\d+)?)(?:\s+[—–-].*)?$",
     re.IGNORECASE,
 )
+
+
+class PreSubmissionError(RuntimeError):
+    """A failure that occurred before Place Bet was clicked and is safe to retry."""
 
 
 def load_env(file_path: str | Path = DEFAULT_ENV_FILE) -> None:
@@ -337,6 +346,11 @@ def virtual_frames(page: Any) -> list[Any]:
     return [frame for frame in page.frames if frame != page.main_frame]
 
 
+def frame_matches_league(frame: Any, league: str) -> bool:
+    """Return true only for the bookmaker iframe that owns this league."""
+    return LEAGUE_FRAME_PATHS.get(league, "<unsupported>") in str(frame.url).lower()
+
+
 def activate_league(page: Any, league: str) -> None:
     for frame in virtual_frames(page):
         control = first_visible(frame.get_by_text(league, exact=True))
@@ -365,6 +379,20 @@ def find_event_scope(frame: Any, selection: dict[str, Any]) -> Any | None:
     away_needle = comparable(selection["away"])
     # Current Bet9ja builds expose stable match-row classes. Prefer the whole
     # row so the +N expanded-market control remains inside the scope.
+    betting_control_selector = (
+        'a.sr-oddsButton, [data-name], button, [role="button"], '
+        '[class*="odd" i], [class*="selection" i], [class*="market" i]'
+    )
+
+    def has_visible_betting_control(scope: Any) -> bool:
+        for control in scope.query_selector_all(betting_control_selector):
+            try:
+                if control.is_visible():
+                    return True
+            except Exception:
+                continue
+        return False
+
     for selector in (".sr-matchRow", ".sr-odds-row"):
         for row in frame.locator(selector).element_handles():
             try:
@@ -372,7 +400,12 @@ def find_event_scope(frame: Any, selection: dict[str, Any]) -> Any | None:
                 visible = row.is_visible()
             except Exception:
                 continue
-            if visible and text_contains_team(text, home_needle) and text_contains_team(text, away_needle):
+            if (
+                visible
+                and text_contains_team(text, home_needle)
+                and text_contains_team(text, away_needle)
+                and has_visible_betting_control(row)
+            ):
                 return row
     handles = frame.locator("body *").element_handles()
     best = None
@@ -382,19 +415,25 @@ def find_event_scope(frame: Any, selection: dict[str, Any]) -> Any | None:
             data = handle.evaluate(
                 """element => {
                     const rect = element.getBoundingClientRect();
+                    const excluded = element.closest(
+                        '[class*="livescore" i], [class*="settlement" i], '
+                        '[class*="statistic" i], [class*="overlay" i]'
+                    );
                     return {
                         text: (element.innerText || '').replace(/\\s+/g, ' ').trim(),
-                        visible: rect.width > 0 && rect.height > 0
+                        visible: rect.width > 0 && rect.height > 0,
+                        excluded: Boolean(excluded)
                     };
                 }"""
             )
         except Exception:
             continue
-        if not data.get("visible"):
+        if not data.get("visible") or data.get("excluded"):
             continue
         if (
             text_contains_team(data.get("text", ""), home_needle)
             and text_contains_team(data.get("text", ""), away_needle)
+            and has_visible_betting_control(handle)
             and len(data["text"]) < best_length
         ):
             best = handle
@@ -486,37 +525,100 @@ def click_selection_in_scope(scope: Any, selection: dict[str, Any]) -> str:
         f"; displayed candidates were {sorted(set(mismatched_prices))}"
         if mismatched_prices else ""
     )
+    visible_controls = []
+    for candidate in scope.query_selector_all(
+        'button, [role="button"], a, [data-name], [class*="odd" i], '
+        '[class*="selection" i], [class*="market" i]'
+    ):
+        try:
+            if not candidate.is_visible():
+                continue
+            visible_controls.append(
+                {
+                    "tag": candidate.evaluate("element => element.tagName"),
+                    "class": clean(candidate.get_attribute("class"))[:120],
+                    "data_name": clean(candidate.get_attribute("data-name"))[:120],
+                    "text": clean(candidate.inner_text())[:120],
+                }
+            )
+            if len(visible_controls) >= 20:
+                break
+        except Exception:
+            continue
     raise RuntimeError(
         f'Market {selection["market"]} was not found for '
         f'{selection["home"]} vs {selection["away"]}; '
-        f"the site layout or displayed odds may have changed{mismatch_note}"
+        f"the site layout or displayed odds may have changed{mismatch_note}; "
+        f"visible controls={json.dumps(visible_controls, ensure_ascii=True)}"
     )
 
 
 def mark_selection(
     page: Any, selection: dict[str, Any], timeout_seconds: float = 65
 ) -> dict[str, Any]:
-    frames = virtual_frames(page)
+    frames = [
+        frame for frame in virtual_frames(page)
+        if frame_matches_league(frame, selection["league"])
+    ]
     fixture_already_visible = any(
         find_event_scope(frame, selection) is not None for frame in frames
     )
-    if not fixture_already_visible:
+    # Do not click the active league tab again between accumulator legs. That
+    # destroys and recreates its iframe, costing several seconds and briefly
+    # hiding every fixture in the already-open betting window.
+    if not frames and not fixture_already_visible:
         activate_league(page, selection["league"])
     # A missing fixture normally means the virtual round has rolled over.
     # Return quickly instead of consuming the complete ticket window.
     # A freshly selected league can take several seconds to render its market
     # rows even though the launcher itself is ready.
-    deadline = time.monotonic() + max(1, min(timeout_seconds, 15))
+    # Vflm2 products (notably English League on the OVH Xvfb host) can expose
+    # the iframe URL several seconds before React paints its betting table.
+    # Allow the first leg to wait for that render; later legs reuse the frame.
+    deadline = time.monotonic() + max(1, min(timeout_seconds, 25))
     scope = None
     frame = None
     while time.monotonic() < deadline and scope is None:
         for candidate_frame in virtual_frames(page):
-            candidate_scope = find_event_scope(candidate_frame, selection)
+            if not frame_matches_league(candidate_frame, selection["league"]):
+                continue
+            try:
+                candidate_scope = find_event_scope(candidate_frame, selection)
+            except Exception:
+                continue
             if candidate_scope is not None:
                 frame, scope = candidate_frame, candidate_scope
                 break
         if scope is None:
             page.wait_for_timeout(250)
+    # The launcher occasionally creates the correct product iframe but leaves
+    # its document blank under Xvfb. Reload that iframe once, then reacquire it.
+    # This is pre-submission recovery and therefore cannot duplicate a wager.
+    recovery_frames = [
+        candidate for candidate in virtual_frames(page)
+        if frame_matches_league(candidate, selection["league"])
+    ]
+    if scope is None and recovery_frames and timeout_seconds > 25:
+        try:
+            recovery_frames[0].evaluate("location.reload()")
+        except Exception:
+            pass
+        recovery_deadline = time.monotonic() + max(
+            1, min(25, timeout_seconds - 25)
+        )
+        while time.monotonic() < recovery_deadline and scope is None:
+            for candidate_frame in virtual_frames(page):
+                if not frame_matches_league(candidate_frame, selection["league"]):
+                    continue
+                try:
+                    candidate_scope = find_event_scope(candidate_frame, selection)
+                except Exception:
+                    continue
+                if candidate_scope is not None:
+                    frame, scope = candidate_frame, candidate_scope
+                    break
+            if scope is None:
+                page.wait_for_timeout(250)
     if scope is not None and frame is not None:
         try:
             clicked_text = click_selection_in_scope(scope, selection)
@@ -908,9 +1010,25 @@ class Bet9jaBrowser:
                 if remaining <= 0:
                     raise RuntimeError("Ticket preparation exceeded its time budget")
                 marked.append(mark_selection(self.page, selection, remaining))
-        except Exception:
+        except Exception as error:
+            failure_artifact = self.diagnostics_path.with_name(
+                f"bet9ja_selection_failure_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"
+            )
+            try:
+                self.page.screenshot(path=str(failure_artifact.resolve()), full_page=True)
+            except Exception as screenshot_error:
+                self._diagnostic(
+                    "selection_screenshot_failed", error=self._safe_text(screenshot_error)
+                )
+            self._diagnostic(
+                "selection_failed",
+                selection=selection,
+                error=self._safe_text(error, limit=4000),
+                screenshot=str(failure_artifact),
+                frames=[self._safe_url(frame.url) for frame in self.page.frames],
+            )
             clear_betslip(self.page)
-            raise
+            raise PreSubmissionError(str(error)) from error
         actual_legs = betslip_count(self.page)
         expected_legs = len(ticket["selections"])
         if actual_legs != expected_legs:

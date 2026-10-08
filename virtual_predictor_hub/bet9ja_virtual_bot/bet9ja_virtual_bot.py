@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from bet9ja_virtual_betslip import Bet9jaBrowser
+from bet9ja_virtual_betslip import Bet9jaBrowser, PreSubmissionError
 
 from prediction_engine import (
     FEATURE_NAMES,
@@ -618,7 +618,7 @@ def run_once(
                 len(inserted), combined_odds, target,
             )
             return 0
-        db.execute(
+        combination_cursor = db.execute(
             "INSERT INTO combinations(created_at,match_ids,markets,combined_odds,estimated_probability,strategy) VALUES(?,?,?,?,?,?)",
             (now, json.dumps([x["match_id"] for x in inserted]), json.dumps([x["market"] for x in inserted]), combined_odds, joint, strategy),
         )
@@ -648,6 +648,14 @@ def run_once(
                 lines.append(
                     f"Bet automation: {bet_result['mode']} — stake ₦{bet_result['stake']:,.2f}"
                 )
+            except PreSubmissionError as error:
+                # No submission was attempted. Remove only this new ticket so
+                # the warm browser can retry it on the next polling cycle.
+                db.execute("DELETE FROM combinations WHERE id=?", (combination_cursor.lastrowid,))
+                db.executemany("DELETE FROM predictions WHERE id=?", [(value,) for value in inserted_ids])
+                db.commit()
+                logging.exception("Bet9ja pre-submission automation failed; ticket released for retry")
+                lines.append(f"Bet automation: RETRYABLE — {error}")
             except Exception as error:
                 logging.exception("Bet9ja bet automation failed")
                 lines.append(f"Bet automation: FAILED — {error}")
