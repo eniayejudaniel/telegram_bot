@@ -992,27 +992,46 @@ class Bet9jaBrowser:
         screenshot: str | Path | None = None,
     ) -> dict[str, Any]:
         started_at = time.monotonic()
-        self.keep_warm()
-        ticket = parse_prediction_message(message)
         numeric_stake = float(stake) if stake is not None else None
         if numeric_stake is not None and numeric_stake <= 0:
             raise ValueError("Stake must be a positive number")
-        clear_betslip(self.page)
-        capital = read_capital(self.page) if numeric_stake is None else None
-        effective_stake = (
-            calculate_stake(capital) if numeric_stake is None else numeric_stake
-        )
+        ticket: dict[str, Any] | None = None
+        selection: dict[str, Any] | None = None
         marked: list[dict[str, Any]] = []
         deadline = started_at + self.ticket_timeout_seconds
         try:
+            self.keep_warm()
+            ticket = parse_prediction_message(message)
+            clear_betslip(self.page)
+            capital = read_capital(self.page) if numeric_stake is None else None
+            effective_stake = (
+                calculate_stake(capital) if numeric_stake is None else numeric_stake
+            )
             for selection in ticket["selections"]:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise RuntimeError("Ticket preparation exceeded its time budget")
                 marked.append(mark_selection(self.page, selection, remaining))
+            actual_legs = betslip_count(self.page)
+            expected_legs = len(ticket["selections"])
+            if actual_legs != expected_legs:
+                raise RuntimeError(
+                    f"Betslip integrity failure: expected {expected_legs} legs, "
+                    f"but Bet9ja retained {actual_legs}"
+                )
+            fill_stake(self.page, effective_stake)
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "Ticket preparation exceeded its time budget before submission"
+                )
+            place_bet_button = find_place_bet_button(self.page)
+            if place_bet_button is None:
+                raise RuntimeError(
+                    "Place Bet button was not found after preparing the betslip"
+                )
         except Exception as error:
             failure_artifact = self.diagnostics_path.with_name(
-                f"bet9ja_selection_failure_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"
+                f"bet9ja_pre_submission_failure_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"
             )
             try:
                 self.page.screenshot(path=str(failure_artifact.resolve()), full_page=True)
@@ -1021,29 +1040,21 @@ class Bet9jaBrowser:
                     "selection_screenshot_failed", error=self._safe_text(screenshot_error)
                 )
             self._diagnostic(
-                "selection_failed",
+                "pre_submission_failed",
                 selection=selection,
                 error=self._safe_text(error, limit=4000),
                 screenshot=str(failure_artifact),
                 frames=[self._safe_url(frame.url) for frame in self.page.frames],
             )
-            clear_betslip(self.page)
+            try:
+                clear_betslip(self.page)
+            except Exception as cleanup_error:
+                self._diagnostic(
+                    "pre_submission_cleanup_failed",
+                    error=self._safe_text(cleanup_error),
+                )
             raise PreSubmissionError(str(error)) from error
-        actual_legs = betslip_count(self.page)
-        expected_legs = len(ticket["selections"])
-        if actual_legs != expected_legs:
-            clear_betslip(self.page)
-            raise RuntimeError(
-                f"Betslip integrity failure: expected {expected_legs} legs, "
-                f"but Bet9ja retained {actual_legs}"
-            )
-        fill_stake(self.page, effective_stake)
-        if time.monotonic() >= deadline:
-            clear_betslip(self.page)
-            raise RuntimeError("Ticket preparation exceeded its time budget before submission")
-        place_bet_button = find_place_bet_button(self.page)
-        if place_bet_button is None:
-            raise RuntimeError("Place Bet button was not found after preparing the betslip")
+        assert ticket is not None
         if screenshot:
             self.page.screenshot(path=str(Path(screenshot).resolve()), full_page=True)
         submitted = False

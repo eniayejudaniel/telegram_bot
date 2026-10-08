@@ -639,7 +639,9 @@ def run_once(
             stake = float(os.getenv("BET9JA_TEST_STAKE", "100")) if test_mode else None
             try:
                 if bet_browser is None:
-                    raise RuntimeError("Bet9ja warm browser service is unavailable")
+                    raise PreSubmissionError(
+                        "Bet9ja warm browser service is unavailable"
+                    )
                 bet_result = bet_browser.prepare(
                     ticket_message,
                     stake=stake,
@@ -710,7 +712,23 @@ def main() -> None:
     while True:
         try:
             if bet_browser is not None:
-                bet_browser.keep_warm()
+                try:
+                    bet_browser.keep_warm()
+                except Exception:
+                    # A dead Chromium process or Playwright pipe must not block
+                    # prediction polling. Recreate it once, then let run_once
+                    # release any qualifying ticket for retry if recovery fails.
+                    logging.exception(
+                        "Bet9ja warm-browser health check failed; restarting browser"
+                    )
+                    try:
+                        bet_browser.close()
+                        bet_browser.start()
+                        logging.info("Bet9ja browser recovery completed")
+                    except Exception:
+                        logging.exception(
+                            "Bet9ja browser recovery failed; polling will continue"
+                        )
             telegram.process_updates()
             settled = settle(db, state)
             target = float(os.getenv("TARGET_COMBINED_ODDS", "2.00"))

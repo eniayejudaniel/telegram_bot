@@ -2,13 +2,33 @@ import unittest
 import os
 import sqlite3
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from prediction_engine import FEATURE_NAMES, LogisticModel, build_combination, build_optimized_combination
 from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
-from bet9ja_virtual_betslip import classify_ticket_response, frame_matches_league
+from bet9ja_virtual_betslip import (
+    Bet9jaBrowser,
+    PreSubmissionError,
+    classify_ticket_response,
+    frame_matches_league,
+)
 
 
 class PredictionSystemTests(unittest.TestCase):
+    def test_browser_failure_before_click_is_retryable(self):
+        browser = Bet9jaBrowser.__new__(Bet9jaBrowser)
+        browser.page = MagicMock()
+        browser.page.frames = []
+        browser.ticket_timeout_seconds = 75
+        browser.keep_warm = MagicMock(side_effect=RuntimeError("browser pipe closed"))
+        browser._diagnostic = MagicMock()
+        browser.diagnostics_path = SimpleNamespace(
+            with_name=lambda _name: SimpleNamespace(resolve=lambda: "failure.png")
+        )
+
+        with self.assertRaisesRegex(PreSubmissionError, "browser pipe closed"):
+            browser.prepare("message", stake=100, submit=True)
+
     def test_virtual_frame_is_bound_to_requested_league(self):
         english = SimpleNamespace(
             url="https://vflive-vs001.akamaized.net/vfel/desktop/index"
