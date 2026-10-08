@@ -1,0 +1,122 @@
+{
+  "Bundesliga": {
+    "matches": 12000,
+    "season_ids": 51,
+    "season_equivalents": 50.0,
+    "markets": {
+      "over_1_5": {
+        "hits": 8879,
+        "rate": 0.7399166666666667,
+        "ci95": [
+          0.7319917883360992,
+          0.7476879835129394
+        ],
+        "season_rate_sd": 0.03168229462207651,
+        "longest_hit_streak": 27,
+        "longest_miss_streak": 7
+      },
+      "under_3_5": {
+        "hits": 8775,
+        "rate": 0.73125,
+        "ci95": [
+          0.7232451009887886,
+          0.7391068847288502
+        ],
+        "season_rate_sd": 0.0254945617975426,
+        "longest_hit_streak": 27,
+        "longest_miss_streak": 7
+      },
+      "12": {
+        "hits": 9103,
+        "rate": 0.7585833333333334,
+        "ci95": [
+          0.7508444964728148,
+          0.7661566608900082
+        ],
+        "season_rate_sd": 0.023793180450809824,
+        "longest_hit_streak": 38,
+        "longest_miss_streak": 7
+      }
+    }
+  },
+  "Euro League": {
+    "matches": 12000,
+    "season_ids": 51,
+    "season_equivalents": 50.0,
+    "markets": {
+      "over_1_5": {
+        "hits": 8724,
+        "rate": 0.727,
+        "ci95": [
+          0.7189572760439172,
+          0.7348974299362082
+        ],
+        "season_rate_sd": 0.02827395225567673,
+        "longest_hit_streak": 21,
+        "longest_miss_streak": 8
+      },
+      "under_3_5": {
+        "hits": 8858,
+        "rate": 0.7381666666666666,
+        "ci95": [
+          0.7302253139026678,
+          0.7459555780544536
+        ],
+        "season_rate_sd": 0.02720705489980721,
+        "longest_hit_streak": 25,
+        "longest_miss_streak": 6
+      },
+      "12": {
+        "hits": 9025,
+        "rate": 0.7520833333333333,
+        "ci95": [
+          0.7442775346766803,
+          0.7597277830875926
+        ],
+        "season_rate_sd": 0.03226766629439204,
+        "longest_hit_streak": 27,
+        "longest_miss_streak": 5
+      }
+    }
+  },
+  "English League": {
+    "matches": 12000,
+    "season_ids": 51,
+    "season_equivalents": 50.0,
+    "markets": {
+      "over_1_5": {
+        "hits": 8838,
+        "rate": 0.7365,
+        "ci95": [
+          0.7285431071079856,
+          0.7443055182854051
+        ],
+        "season_rate_sd": 0.02892124096542571,
+        "longest_hit_streak": 38,
+        "longest_miss_streak": 7
+      },
+      "under_3_5": {
+        "hits": 8879,
+        "rate": 0.7399166666666667,
+        "ci95": [
+          0.7319917883360992,
+          0.7476879835129394
+        ],
+        "season_rate_sd": 0.02687984750420951,
+        "longest_hit_streak": 34,
+        "longest_miss_streak": 7
+      },
+      "12": {
+        "hits": 9152,
+        "rate": 0.7626666666666667,
+        "ci95": [
+          0.754971123956745,
+          0.7701940864872182
+        ],
+        "season_rate_sd": 0.034092163354671974,
+        "longest_hit_streak": 29,
+        "longest_miss_streak": 6
+      }
+    }
+  }
+}

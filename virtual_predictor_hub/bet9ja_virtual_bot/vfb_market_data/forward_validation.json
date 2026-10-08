@@ -1,0 +1,42 @@
+{
+  "design": {
+    "initial_train": 12000,
+    "block": 6000,
+    "threshold": 0.76
+  },
+  "markets": {
+    "12": {
+      "predictions": 24000,
+      "base_hit_rate": 0.7584166666666666,
+      "brier": 0.18509521859030373,
+      "selected": 10318,
+      "coverage": 0.42991666666666667,
+      "selected_hit_rate": 0.7647799961232797,
+      "longest_selected_miss_streak": 5
+    },
+    "over_1_5": {
+      "predictions": 24000,
+      "base_hit_rate": 0.7341666666666666,
+      "brier": 0.1951095930219008,
+      "selected": 7650,
+      "coverage": 0.31875,
+      "selected_hit_rate": 0.7752941176470588,
+      "longest_selected_miss_streak": 7
+    },
+    "under_3_5": {
+      "predictions": 24000,
+      "base_hit_rate": 0.7366666666666667,
+      "brier": 0.1939771078225942,
+      "selected": 10723,
+      "coverage": 0.44679166666666664,
+      "selected_hit_rate": 0.7687214398955516,
+      "longest_selected_miss_streak": 6
+    }
+  },
+  "three_leg_simulation": {
+    "selections": 20373,
+    "slips": 6791,
+    "hit_rate": 0.4572227948755706,
+    "mean_estimated_probability": 0.5248595334387992
+  }
+}
