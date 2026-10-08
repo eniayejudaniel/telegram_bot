@@ -47,25 +47,4 @@ python retrain_live_models.py
 Training and forward validation are chronological. Match results never update
 features before the corresponding prediction is produced.
 
-## OVH deployment
 
-The production browser must run headed inside Xvfb; Bet9ja does not initialize
-reliably with Chromium's headless shell.
-
-```bash
-sudo useradd --system --home /opt/virtual-predictor-hub --shell /usr/sbin/nologin virtualpredict
-sudo mkdir -p /opt/virtual-predictor-hub/bet9ja_virtual_bot/data
-sudo chown -R virtualpredict:virtualpredict /opt/virtual-predictor-hub
-sudo -u virtualpredict python3 -m venv /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv
-sudo -u virtualpredict /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv/bin/pip install -r /opt/virtual-predictor-hub/bet9ja_virtual_bot/requirements.txt
-sudo /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv/bin/playwright install-deps chromium
-sudo -u virtualpredict /opt/virtual-predictor-hub/bet9ja_virtual_bot/.venv/bin/playwright install chromium
-sudo cp bet9ja_virtual_bot/deploy/bet9ja-virtual-bot.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now bet9ja-virtual-bot
-sudo journalctl -u bet9ja-virtual-bot -f
-```
-
-Production staking uses one tenth of the visible account balance. The bot
-verifies the league, fixtures, markets, retained leg count, stake, deadline,
-and Bet9ja acceptance state before reporting success to the administrator.
