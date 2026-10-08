@@ -1,4 +1,0 @@
--r requirements.txt
-curl_cffi>=0.13,<1
-camoufox>=0.4,<1
-json5>=0.9,<1

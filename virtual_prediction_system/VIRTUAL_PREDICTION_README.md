@@ -71,39 +71,3 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now virtual-prediction
 sudo journalctl -u virtual-prediction -f
 ```
-
-## Real football pipeline
-
-The `real_football` package uses the official FootyStats API for fixtures,
-statistics, H2H information and available odds. It polls every two hours by
-default, estimates Over 1.5, Under 3.5 and 12 probabilities, requires a model
-edge over implied probability, and sends only combinations within 1.50–1.55.
-It reuses the existing authorized Telegram subscriber database.
-
-WhoScored enrichment can be imported from licensed JSON exports or collected
-through an explicitly authorized browser session. The collector stores monthly
-fixtures/results and the page's embedded `matchCentreData` in SQLite. It uses
-conservative request spacing and does not bypass access denials.
-
-HTTP calls use a persistent `curl-cffi` session for connection reuse. An
-optional Camoufox cookie manager can capture a user-authorized session locally:
-
-```bash
-pip install -r requirements-real-football.txt
-python -m camoufox fetch
-python -m real_football.cookie_manager https://www.whoscored.com/
-python -m real_football.collect_whoscored --stage-id 12345 --month 202610
-python -m real_football.cookie_manager https://footystats.org/
-python -m real_football.collect_footystats_live --backend camoufox --headed
-python -m real_football.collect_footystats_live --backend camoufox
-python -m real_football.collect_footystats_live --backend camoufox --poll-seconds 60 --cycles 0
-```
-
-The first command runs visibly so the user can complete any consent or sign-in.
-Subsequent collection reuses the persistent Camoufox profile and performs the
-live-score request inside the same browser context. Cloudflare clearance
-cookies are not copied into a different HTTP client.
-
-The cookie manager is domain-restricted, stores files with owner-only
-permissions, and is not used to evade access controls. Never commit its profile
-or cookie files.
