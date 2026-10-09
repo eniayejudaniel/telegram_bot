@@ -416,7 +416,7 @@ def find_event_scope(frame: Any, selection: dict[str, Any]) -> Any | None:
                 """element => {
                     const rect = element.getBoundingClientRect();
                     const excluded = element.closest(
-                        '[class*="livescore" i], [class*="settlement" i], '
+                        '[class*="livesettlement" i], [class*="settlement" i], '
                         '[class*="statistic" i], [class*="overlay" i]'
                     );
                     return {
@@ -598,7 +598,24 @@ def mark_selection(
         candidate for candidate in virtual_frames(page)
         if frame_matches_league(candidate, selection["league"])
     ]
-    if scope is None and recovery_frames and timeout_seconds > 25:
+    frame_has_betting_table = False
+    for candidate_frame in recovery_frames:
+        try:
+            controls = candidate_frame.locator('a.sr-oddsButton')
+            frame_has_betting_table = any(
+                controls.nth(index).is_visible()
+                for index in range(min(controls.count(), 20))
+            )
+        except Exception:
+            continue
+        if frame_has_betting_table:
+            break
+    if (
+        scope is None
+        and recovery_frames
+        and timeout_seconds > 25
+        and not frame_has_betting_table
+    ):
         try:
             recovery_frames[0].evaluate("location.reload()")
         except Exception:
@@ -830,6 +847,15 @@ class Bet9jaBrowser:
 
     def _diagnostic(self, event: str, **details: Any) -> None:
         self.diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+        if (
+            self.diagnostics_path.exists()
+            and self.diagnostics_path.stat().st_size > 10 * 1024 * 1024
+        ):
+            rotated = self.diagnostics_path.with_suffix(
+                self.diagnostics_path.suffix + ".1"
+            )
+            rotated.unlink(missing_ok=True)
+            self.diagnostics_path.replace(rotated)
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event": event,
@@ -844,9 +870,13 @@ class Bet9jaBrowser:
             return "bet9ja" in host or "akamaized.net" in host
 
         def response_seen(response: Any) -> None:
-            if relevant(response.url) and response.request.resource_type in {
-                "document", "xhr", "fetch", "script"
-            }:
+            # Successful feed/video requests occur several times per second.
+            # Keep navigation and HTTP failures without allowing diagnostics to
+            # consume disk space and eventually stop the betting service.
+            if relevant(response.url) and (
+                response.request.resource_type == "document"
+                or response.status >= 400
+            ):
                 self._diagnostic(
                     "response",
                     status=response.status,
