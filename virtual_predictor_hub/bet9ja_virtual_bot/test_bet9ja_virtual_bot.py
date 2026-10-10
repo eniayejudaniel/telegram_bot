@@ -12,6 +12,7 @@ from bet9ja_virtual_betslip import (
     activate_league,
     classify_ticket_response,
     frame_matches_league,
+    sanitize_ticket_request,
 )
 
 
@@ -76,6 +77,29 @@ class PredictionSystemTests(unittest.TestCase):
     def test_ticket_response_accepts_explicit_success(self):
         result = classify_ticket_response(201, {"success": True, "status": "placed"})
         self.assertEqual(result["state"], "accepted")
+
+    def test_ticket_response_accepts_native_rgs_success_contract(self):
+        result = classify_ticket_response(
+            200, {"statusCode": 0, "data": [[{"code": 0, "ticketId": "T-1"}]]}
+        )
+        self.assertEqual(result["state"], "accepted")
+        self.assertEqual(result["ticket_id"], "T-1")
+
+    def test_ticket_request_capture_removes_customer_identity(self):
+        payload = [{
+            "version": "2.2",
+            "sender": {
+                "bookmakerId": 9478,
+                "endCustomer": {"id": "private", "username": "private"},
+            },
+            "selections": [{"id": "selection-1"}],
+            "bets": [{"stake": {"type": "unit", "value": "100"}}],
+        }]
+        sanitized = sanitize_ticket_request(payload)
+        self.assertEqual(sanitized[0]["selections"][0]["id"], "selection-1")
+        self.assertEqual(sanitized[0]["bets"][0]["stake"]["value"], "100")
+        self.assertNotIn("id", sanitized[0]["sender"]["endCustomer"])
+        self.assertTrue(sanitized[0]["sender"]["endCustomer"]["present"])
 
     def test_ticket_response_rejects_business_error_with_http_200(self):
         result = classify_ticket_response(200, {"success": False, "message": "Insufficient funds"})

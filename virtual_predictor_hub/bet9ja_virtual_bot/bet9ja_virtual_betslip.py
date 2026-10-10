@@ -106,6 +106,8 @@ def classify_ticket_response(status: int, payload: Any) -> dict[str, Any]:
     success_terms = ("accepted", "success", "successful", "placed", "created")
     status_values = [clean(value).lower() for value in flattened.get("status", [])]
     success_values = flattened.get("success", []) + flattened.get("ok", [])
+    rgs_status_codes = flattened.get("statuscode", [])
+    rgs_result_codes = flattened.get("code", [])
     identifier_keys = (
         "ticketid", "ticketcode", "bookingcode", "couponid", "betslipid", "id",
     )
@@ -129,6 +131,10 @@ def classify_ticket_response(status: int, payload: Any) -> dict[str, Any]:
         and (
             ticket_id is not None
             or any(value is True for value in success_values)
+            or (
+                any(str(value) == "0" for value in rgs_status_codes)
+                and any(str(value) == "0" for value in rgs_result_codes)
+            )
             or any(any(term in value for term in success_terms) for value in status_values)
         )
     )
@@ -137,6 +143,25 @@ def classify_ticket_response(status: int, payload: Any) -> dict[str, Any]:
         "http_status": status,
         "ticket_id": ticket_id,
     }
+
+
+def sanitize_ticket_request(payload: Any) -> Any:
+    """Retain the RGS ticket contract while removing customer identity fields."""
+    if not isinstance(payload, (dict, list)):
+        return payload
+    clone = json.loads(json.dumps(payload))
+    tickets = clone if isinstance(clone, list) else [clone]
+    for ticket in tickets:
+        if not isinstance(ticket, dict):
+            continue
+        sender = ticket.get("sender")
+        if isinstance(sender, dict) and "endCustomer" in sender:
+            customer = sender.get("endCustomer")
+            sender["endCustomer"] = {
+                "present": bool(customer),
+                "fields": sorted(customer) if isinstance(customer, dict) else [],
+            }
+    return clone
 
 
 def comparable(value: Any) -> str:
@@ -1108,11 +1133,29 @@ class Bet9jaBrowser:
                 )
             ticket_responses: list[Any] = []
 
+            def capture_ticket_request(request: Any) -> None:
+                url = request.url.lower().split("?", 1)[0].rstrip("/")
+                if not url.endswith("/tickets") or request.method.upper() == "GET":
+                    return
+                try:
+                    payload = request.post_data_json
+                except Exception:
+                    payload = {"raw": self._safe_text(request.post_data or "")}
+                self._diagnostic(
+                    "ticket_submission_request",
+                    method=request.method.upper(),
+                    url=self._safe_url(request.url),
+                    content_type=request.headers.get("content-type"),
+                    has_authorization=bool(request.headers.get("authorization")),
+                    payload=sanitize_ticket_request(payload),
+                )
+
             def capture_ticket_response(response: Any) -> None:
                 url = response.url.lower().split("?", 1)[0].rstrip("/")
                 if url.endswith("/tickets") and response.request.method.upper() != "GET":
                     ticket_responses.append(response)
 
+            self.page.on("request", capture_ticket_request)
             self.page.on("response", capture_ticket_response)
             place_bet_button.click()
             submitted = True
@@ -1169,6 +1212,7 @@ class Bet9jaBrowser:
                         break
                     self.page.wait_for_timeout(250)
             finally:
+                self.page.remove_listener("request", capture_ticket_request)
                 self.page.remove_listener("response", capture_ticket_response)
             if not submission_verified:
                 failure_artifact = self.diagnostics_path.with_name(
