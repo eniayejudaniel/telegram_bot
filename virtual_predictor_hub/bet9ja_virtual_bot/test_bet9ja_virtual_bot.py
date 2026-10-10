@@ -12,11 +12,30 @@ from bet9ja_virtual_betslip import (
     activate_league,
     classify_ticket_response,
     frame_matches_league,
+    parse_prediction_message,
     sanitize_ticket_request,
 )
 
 
 class PredictionSystemTests(unittest.TestCase):
+    def test_prediction_parser_rejects_cross_league_ticket(self):
+        message = (
+            "Bundesliga: A vs B — under_3_5 @ 1.22\n"
+            "Euro League: C vs D — 12 @ 1.25\n"
+            "Combined odds: 1.52"
+        )
+        with self.assertRaisesRegex(ValueError, "must all belong to one league"):
+            parse_prediction_message(message)
+
+    def test_prediction_parser_rejects_inconsistent_combined_odds(self):
+        message = (
+            "Bundesliga: A vs B — under_3_5 @ 1.22\n"
+            "Bundesliga: C vs D — 12 @ 1.25\n"
+            "Combined odds: 1.99"
+        )
+        with self.assertRaisesRegex(ValueError, "combined odds do not match"):
+            parse_prediction_message(message)
+
     def test_animated_league_tab_uses_dom_click_fallback(self):
         control = MagicMock()
         control.is_visible.return_value = True

@@ -48,6 +48,7 @@ MARKET_DATA_NAME_PARTS = {
     "over_1_5": "/18/12?total=1.5",
     "12": "/10/10",
 }
+ODDS_TOLERANCE = 0.011
 SELECTION_PATTERN = re.compile(
     r"^\s*([^:\r\n]+):\s*(.+?)\s+vs\s+(.+?)\s+[—–-]\s*"
     r"(under[_ ]3[._ ]5|over[_ ]1[._ ]5|12)\s+@\s+"
@@ -212,11 +213,27 @@ def parse_prediction_message(message: str) -> dict[str, Any]:
 
     if not selections:
         raise ValueError("No supported selections found in the prediction message")
+    leagues = {selection["league"] for selection in selections}
+    if len(leagues) != 1:
+        raise ValueError(
+            "Bet9ja virtual accumulator selections must all belong to one league"
+        )
     combined = re.search(r"Combined odds:\s*(\d+(?:\.\d+)?)", message, re.I)
-    return {
+    parsed = {
         "selections": selections,
         "advertised_combined_odds": float(combined.group(1)) if combined else None,
     }
+    if parsed["advertised_combined_odds"] is not None:
+        calculated = 1.0
+        for selection in selections:
+            calculated *= selection["expected_odds"]
+        if abs(round(calculated, 2) - parsed["advertised_combined_odds"]) > 0.011:
+            raise ValueError(
+                "Advertised combined odds do not match the selection odds: "
+                f"advertised={parsed['advertised_combined_odds']:.2f}, "
+                f"calculated={calculated:.2f}"
+            )
+    return parsed
 
 
 def first_visible(locator: Any) -> Any | None:
@@ -489,7 +506,7 @@ def click_selection_in_scope(scope: Any, selection: dict[str, Any]) -> str:
             displayed_odds = float(prices[-1]) if prices else None
             if displayed_odds is None:
                 continue
-            if abs(displayed_odds - selection["expected_odds"]) > 0.10:
+            if abs(displayed_odds - selection["expected_odds"]) > ODDS_TOLERANCE:
                 mismatched_prices.append(displayed_odds)
                 continue
             candidate.click()
@@ -599,7 +616,7 @@ def mark_selection(
     # Do not click the active league tab again between accumulator legs. That
     # destroys and recreates its iframe, costing several seconds and briefly
     # hiding every fixture in the already-open betting window.
-    if not frames and not fixture_already_visible:
+    if not fixture_already_visible:
         activate_league(page, selection["league"])
     # A missing fixture normally means the virtual round has rolled over.
     # Return quickly instead of consuming the complete ticket window.
@@ -765,6 +782,17 @@ def fill_stake(page: Any, stake: float) -> None:
             )
         if stake_input is not None:
             stake_input.fill(str(stake))
+            entered = clean(stake_input.input_value()).replace(",", "")
+            try:
+                entered_value = float(entered)
+            except ValueError as error:
+                raise RuntimeError(
+                    f"Betslip stake input contains an invalid value: {entered!r}"
+                ) from error
+            if abs(entered_value - stake) > 0.001:
+                raise RuntimeError(
+                    f"Betslip stake mismatch: expected {stake}, found {entered_value}"
+                )
             return
     raise RuntimeError("Visible betslip stake input was not found")
 
@@ -789,6 +817,15 @@ def betslip_count(page: Any) -> int | None:
         if match:
             return int(match.group(1))
     return None
+
+
+def wait_for_betslip_count(page: Any, expected: int, timeout_ms: int = 3_000) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        if betslip_count(page) == expected:
+            return True
+        page.wait_for_timeout(100)
+    return False
 
 
 def clear_betslip(page: Any) -> None:
@@ -1070,11 +1107,17 @@ class Bet9jaBrowser:
             effective_stake = (
                 calculate_stake(capital) if numeric_stake is None else numeric_stake
             )
-            for selection in ticket["selections"]:
+            for leg_number, selection in enumerate(ticket["selections"], start=1):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise RuntimeError("Ticket preparation exceeded its time budget")
                 marked.append(mark_selection(self.page, selection, remaining))
+                if not wait_for_betslip_count(self.page, leg_number):
+                    raise RuntimeError(
+                        "Betslip did not retain the selected leg: "
+                        f"expected {leg_number} selection(s), found "
+                        f"{betslip_count(self.page)}"
+                    )
             actual_legs = betslip_count(self.page)
             expected_legs = len(ticket["selections"])
             if actual_legs != expected_legs:
