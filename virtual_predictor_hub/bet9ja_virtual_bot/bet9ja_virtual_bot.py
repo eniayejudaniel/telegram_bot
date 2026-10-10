@@ -646,6 +646,7 @@ def run_once(
                     ticket_message,
                     stake=stake,
                     submit=not dry_run,
+                    selection_details=inserted,
                 )
                 lines.append(
                     f"Bet automation: {bet_result['mode']} — stake ₦{bet_result['stake']:,.2f}"

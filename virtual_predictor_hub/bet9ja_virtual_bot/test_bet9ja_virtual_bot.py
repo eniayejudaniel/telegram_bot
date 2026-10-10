@@ -3,6 +3,7 @@ import os
 import sqlite3
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from prediction_engine import FEATURE_NAMES, LogisticModel, build_combination, build_optimized_combination
 from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
@@ -14,10 +15,38 @@ from bet9ja_virtual_betslip import (
     frame_matches_league,
     parse_prediction_message,
     sanitize_ticket_request,
+    build_direct_ticket,
 )
 
 
 class PredictionSystemTests(unittest.TestCase):
+    @patch("bet9ja_virtual_betslip._live_market_price", return_value=1.22)
+    def test_direct_ticket_uses_rgs_units_and_market_identifiers(self, _price):
+        details = [{
+            "match_id": 123, "timestamp": 4_000_000_000,
+            "home_id": 1, "away_id": 2, "home": "Home", "away": "Away",
+            "league": "Bundesliga", "market": "under_3_5", "odds": 1.22,
+            "round": 5,
+        }]
+        payload = build_direct_ticket(details, 100, "customer")
+        selection = payload[0]["selections"][0]
+        self.assertEqual(selection["odds"], 12200)
+        self.assertEqual(
+            selection["id"],
+            "uof:6/sr:sport:1/vf:match:123/18/13?total=3.5",
+        )
+        self.assertEqual(payload[0]["bets"][0]["stake"]["value"], "1000000")
+
+    @patch("bet9ja_virtual_betslip._live_market_price", return_value=1.30)
+    def test_direct_ticket_rejects_changed_odds(self, _price):
+        details = [{
+            "match_id": 123, "timestamp": 4_000_000_000,
+            "home_id": 1, "away_id": 2, "home": "Home", "away": "Away",
+            "league": "English League", "market": "over_1_5", "odds": 1.22,
+        }]
+        with self.assertRaisesRegex(PreSubmissionError, "Odds changed"):
+            build_direct_ticket(details, 100, "customer")
+
     def test_prediction_parser_rejects_cross_league_ticket(self):
         message = (
             "Bundesliga: A vs B — under_3_5 @ 1.22\n"

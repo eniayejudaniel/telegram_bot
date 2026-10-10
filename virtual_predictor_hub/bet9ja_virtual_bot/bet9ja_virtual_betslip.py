@@ -23,7 +23,8 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, quote, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 
 SITE_URL = "https://virtual.bet9ja.com/virtual/?s=new"
 DEFAULT_ENV_FILE = Path(__file__).parent / ".env"
@@ -48,6 +49,23 @@ MARKET_DATA_NAME_PARTS = {
     "over_1_5": "/18/12?total=1.5",
     "12": "/10/10",
 }
+DIRECT_MARKETS = {
+    "under_3_5": {"market": 18, "outcome": 13, "specifier": "total=3.5",
+                    "market_name": "Total 3.5", "outcome_name": "Under 3.5"},
+    "over_1_5": {"market": 18, "outcome": 12, "specifier": "total=1.5",
+                   "market_name": "Total 1.5", "outcome_name": "Over 1.5"},
+    "12": {"market": 10, "outcome": 10, "specifier": "",
+           "market_name": "Double chance", "outcome_name": "12"},
+}
+LEAGUE_PRODUCTS = {
+    "Bundesliga": "VFB", "Euro League": "VFLM", "English League": "VFEL",
+}
+RGS_BASE = "https://rgspluslive-vs001.akamaized.net/betting-rest"
+RGS_KEY = "0GIZYGXQGoqvBBsY"
+ODDS_FEED_BASE = (
+    "https://vglslive-vs001.akamaized.net/vfl/feeds/?/bet9ja/en/"
+    "Europe:Berlin/gismo"
+)
 ODDS_TOLERANCE = 0.011
 SELECTION_PATTERN = re.compile(
     r"^\s*([^:\r\n]+):\s*(.+?)\s+vs\s+(.+?)\s+[—–-]\s*"
@@ -59,6 +77,10 @@ SELECTION_PATTERN = re.compile(
 
 class PreSubmissionError(RuntimeError):
     """A failure that occurred before Place Bet was clicked and is safe to retry."""
+
+
+class SubmissionUncertainError(RuntimeError):
+    """A ticket may have reached Bet9ja and must never be retried automatically."""
 
 
 def load_env(file_path: str | Path = DEFAULT_ENV_FILE) -> None:
@@ -175,6 +197,105 @@ def sanitize_ticket_request(payload: Any) -> Any:
                 "fields": sorted(customer) if isinstance(customer, dict) else [],
             }
     return clone
+
+
+def _get_json(url: str, timeout: float = 6) -> dict[str, Any]:
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(request, timeout=timeout) as response:
+        return json.load(response)
+
+
+def _live_market_price(match_id: int, market: str) -> float:
+    data = _get_json(f"{ODDS_FEED_BASE}/match_odds2/{match_id}")
+    try:
+        match = data["doc"][0]["data"]
+    except (KeyError, IndexError, TypeError) as error:
+        raise PreSubmissionError(f"No live odds document for match {match_id}") from error
+    if match.get("status", {}).get("name") == "Ended":
+        raise PreSubmissionError(f"Match {match_id} has already ended")
+    for item in match.get("odds", []):
+        field = str(item.get("fieldname", ""))
+        if (
+            market == "over_1_5" and item.get("_otid") == 5
+            and item.get("specialoddsvalue") == "1.5" and field == "o"
+        ) or (
+            market == "under_3_5" and item.get("_otid") == 5
+            and item.get("specialoddsvalue") == "3.5" and field == "u"
+        ) or (
+            market == "12" and item.get("_otid") == 8
+            and item.get("_stid") == 27 and field == "12"
+        ):
+            if item.get("status") not in (None, "open"):
+                raise PreSubmissionError(f"Market {market} is closed for match {match_id}")
+            return float(item["value"])
+    raise PreSubmissionError(f"Market {market} is unavailable for match {match_id}")
+
+
+def build_direct_ticket(
+    details: list[dict[str, Any]], stake: float, customer_id: str
+) -> list[dict[str, Any]]:
+    """Build Bet9ja's validated RGS 2.2 accumulator request."""
+    if not details:
+        raise PreSubmissionError("Direct ticket details are missing")
+    selections = []
+    for index, item in enumerate(details):
+        required = ("match_id", "timestamp", "home_id", "away_id", "home", "away",
+                    "league", "market", "odds")
+        missing = [key for key in required if item.get(key) is None]
+        if missing:
+            raise PreSubmissionError(
+                f"Direct ticket leg is missing fields: {', '.join(missing)}"
+            )
+        kickoff = int(item["timestamp"])
+        if kickoff <= time.time() + 5:
+            raise PreSubmissionError(
+                f"Betting window is closed or too close for match {item['match_id']}"
+            )
+        live_odds = _live_market_price(int(item["match_id"]), item["market"])
+        if abs(live_odds - float(item["odds"])) > ODDS_TOLERANCE:
+            raise PreSubmissionError(
+                f"Odds changed for match {item['match_id']}: "
+                f"expected {float(item['odds']):.2f}, live {live_odds:.2f}"
+            )
+        mapping = DIRECT_MARKETS[item["market"]]
+        event_id = f"vf:match:{int(item['match_id'])}"
+        base = (
+            f"uof:6/sr:sport:1/{event_id}/"
+            f"{mapping['market']}/{mapping['outcome']}"
+        )
+        if mapping["specifier"]:
+            base += f"?{mapping['specifier']}"
+        selections.append({
+            "id": base, "eventId": event_id, "odds": round(live_odds * 10000),
+            "convertedOdds": f"{live_odds:.2f}", "convertedOddsType": "dec",
+            "productType": LEAGUE_PRODUCTS[item["league"]], "selectionIndex": index,
+            "metaData": {
+                "lang": "EN-EN", "marketName": mapping["market_name"],
+                "outcomeName": mapping["outcome_name"], "outrightType": None,
+                "marketId": None, "product": LEAGUE_PRODUCTS[item["league"]],
+                "status": "open", "tournament": {
+                    "name": "Match", "sequence": str(item.get("round", "")),
+                    "event": {"competitors": [
+                        {"id": str(item["home_id"]), "name": item["home"],
+                         "abbr": item["home"]},
+                        {"id": str(item["away_id"]), "name": item["away"],
+                         "abbr": item["away"]}],
+                        "eventStart": str(kickoff * 1000),
+                        "name": f"{item['home']} vs {item['away']}",
+                        "sequence": str(item["match_id"])}}
+            },
+        })
+    refs = [{"selectionIndex": index, "banker": False}
+            for index in range(len(selections))]
+    return [{
+        "version": "2.2", "timestampUtc": str(round(time.time() * 1000)),
+        "sender": {"bookmakerId": 9478, "channel": "internet", "currency": "ngn",
+                   "shopId": None, "terminalId": None, "limitId": 1424,
+                   "endCustomer": {"id": customer_id}},
+        "selections": selections,
+        "bets": [{"selectionRefs": refs, "selectedSystems": [len(selections)],
+                  "stake": {"type": "unit", "value": str(round(stake * 10000))}}],
+    }]
 
 
 def comparable(value: Any) -> str:
@@ -1095,6 +1216,121 @@ class Bet9jaBrowser:
         self._authenticate_and_warm()
         return True
 
+    def _rgs_post(self, url: str, payload: Any) -> dict[str, Any]:
+        launcher = next(
+            (frame for frame in self.page.frames if "bwg.html" in frame.url), None
+        )
+        if launcher is None:
+            raise PreSubmissionError("Authenticated Bet9ja launcher is unavailable")
+        return launcher.evaluate(
+            """async args => {
+                const response = await fetch(args.url, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(args.payload)
+                });
+                const text = await response.text();
+                let body;
+                try { body = JSON.parse(text); } catch (_) { body = {raw: text}; }
+                return {status: response.status, body};
+            }""",
+            {"url": url, "payload": payload},
+        )
+
+    def _prepare_direct(
+        self,
+        ticket: dict[str, Any],
+        details: list[dict[str, Any]],
+        effective_stake: float,
+        capital: float | None,
+        submit: bool,
+        started_at: float,
+    ) -> dict[str, Any]:
+        if len(details) != len(ticket["selections"]):
+            raise PreSubmissionError("Direct ticket leg count does not match the message")
+        for parsed, detail in zip(ticket["selections"], details):
+            if (
+                parsed["league"] != detail.get("league")
+                or parsed["market"] != detail.get("market")
+                or not text_contains_team(parsed["home"], detail.get("home", ""))
+                or not text_contains_team(parsed["away"], detail.get("away", ""))
+                or abs(parsed["expected_odds"] - float(detail.get("odds", 0)))
+                    > ODDS_TOLERANCE
+            ):
+                raise PreSubmissionError("Direct ticket details do not match the message")
+        launcher = next(
+            (frame for frame in self.page.frames if "bwg.html" in frame.url), None
+        )
+        if launcher is None:
+            raise PreSubmissionError("Authenticated Bet9ja launcher is unavailable")
+        customer_id = parse_qs(urlsplit(launcher.url).query).get("id", [None])[0]
+        if not customer_id:
+            raise PreSubmissionError("Bet9ja customer session id is unavailable")
+        payload = build_direct_ticket(details, effective_stake, customer_id)
+        calculate_url = f"{RGS_BASE}/bookmakers/9478/calculate?key={RGS_KEY}"
+        calculation = self._rgs_post(calculate_url, payload)
+        calculation_body = calculation.get("body", {})
+        calculation_ok = (
+            calculation.get("status") == 200
+            and calculation_body.get("statusCode") == 0
+            and not calculation_body.get("errors")
+        )
+        self._diagnostic(
+            "direct_ticket_calculation",
+            ok=calculation_ok,
+            http_status=calculation.get("status"),
+            status_code=calculation_body.get("statusCode"),
+            errors=self._safe_text(calculation_body.get("errors", []), 2000),
+            payload=sanitize_ticket_request(payload),
+        )
+        if not calculation_ok:
+            raise PreSubmissionError("Bet9ja rejected direct ticket calculation")
+        if not submit:
+            return {
+                "ok": True, "mode": "direct_calculated_only", "capital": capital,
+                "stake": effective_stake,
+                "advertised_combined_odds": ticket["advertised_combined_odds"],
+                "selections": details, "place_bet_found": False,
+                "submission_verified": False,
+                "submission_evidence": {"state": "validated", "source": "calculate"},
+                "elapsed_seconds": round(time.monotonic() - started_at, 3),
+            }
+        if os.getenv("BET9JA_ALLOW_REAL_BET") != "true":
+            raise SubmissionUncertainError(
+                "Submission blocked: set BET9JA_ALLOW_REAL_BET=true as well as requesting submit"
+            )
+        tickets_url = (
+            f"{RGS_BASE}/bookmakers/9478/users/{quote(customer_id, safe='')}/tickets"
+            f"?key={RGS_KEY}"
+        )
+        # This is deliberately issued exactly once. Any transport ambiguity is
+        # terminal and must never be retried automatically.
+        try:
+            result = self._rgs_post(tickets_url, payload)
+        except Exception as error:
+            raise SubmissionUncertainError(
+                "Direct Bet9ja ticket request had an ambiguous transport failure; "
+                "it will not be retried automatically"
+            ) from error
+        evidence = classify_ticket_response(result.get("status", 0), result.get("body"))
+        self._diagnostic(
+            "direct_ticket_submission_response",
+            **evidence,
+            payload=self._safe_text(result.get("body"), 4000),
+        )
+        if evidence["state"] != "accepted":
+            raise SubmissionUncertainError(
+                "Direct Bet9ja ticket submission was " + evidence["state"]
+                + "; it will not be retried automatically"
+            )
+        return {
+            "ok": True, "mode": "submitted", "capital": capital,
+            "stake": effective_stake,
+            "advertised_combined_odds": ticket["advertised_combined_odds"],
+            "selections": details, "place_bet_found": False,
+            "submission_verified": True, "submission_evidence": evidence,
+            "elapsed_seconds": round(time.monotonic() - started_at, 3),
+        }
+
     def prepare(
         self,
         message: str,
@@ -1102,11 +1338,29 @@ class Bet9jaBrowser:
         *,
         submit: bool = False,
         screenshot: str | Path | None = None,
+        selection_details: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         started_at = time.monotonic()
         numeric_stake = float(stake) if stake is not None else None
         if numeric_stake is not None and numeric_stake <= 0:
             raise ValueError("Stake must be a positive number")
+        if selection_details is not None:
+            try:
+                self.keep_warm()
+                ticket = parse_prediction_message(message)
+                capital = read_capital(self.page) if numeric_stake is None else None
+                effective_stake = (
+                    calculate_stake(capital) if numeric_stake is None else numeric_stake
+                )
+                return self._prepare_direct(
+                    ticket, selection_details, effective_stake, capital, submit, started_at
+                )
+            except PreSubmissionError:
+                raise
+            except SubmissionUncertainError:
+                raise
+            except Exception as error:
+                raise PreSubmissionError(str(error)) from error
         ticket: dict[str, Any] | None = None
         selection: dict[str, Any] | None = None
         marked: list[dict[str, Any]] = []
