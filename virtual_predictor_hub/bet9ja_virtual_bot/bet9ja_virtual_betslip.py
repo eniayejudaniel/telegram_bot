@@ -98,7 +98,13 @@ def classify_ticket_response(status: int, payload: Any) -> dict[str, Any]:
             flattened.setdefault(key, []).append(value)
 
     visit(payload)
-    searchable = clean(json.dumps(payload, ensure_ascii=False)).lower()
+    textual_values = [
+        clean(value).lower()
+        for values in flattened.values()
+        for value in values
+        if isinstance(value, str)
+    ]
+    searchable = " ".join(textual_values)
     rejection_terms = (
         "rejected", "declined", "failed", "failure", "insufficient funds",
         "invalid stake", "odds changed", "selection closed", "event closed",
@@ -110,7 +116,7 @@ def classify_ticket_response(status: int, payload: Any) -> dict[str, Any]:
     rgs_status_codes = flattened.get("statuscode", [])
     rgs_result_codes = flattened.get("code", [])
     identifier_keys = (
-        "ticketid", "ticketcode", "bookingcode", "couponid", "betslipid", "id",
+        "ticketid", "ticketcode", "bookingcode", "couponid", "betslipid",
     )
     ticket_id = next(
         (
@@ -121,9 +127,15 @@ def classify_ticket_response(status: int, payload: Any) -> dict[str, Any]:
         ),
         None,
     )
+    if ticket_id is None and isinstance(payload, dict):
+        ticket = payload.get("ticket")
+        if isinstance(ticket, dict) and clean(ticket.get("id")):
+            ticket_id = clean(ticket["id"])
     rejected = (
         status >= 400
         or any(value is False for value in success_values)
+        or any(str(value) not in {"0", ""} for value in rgs_status_codes)
+        or any(str(value) not in {"0", ""} for value in rgs_result_codes)
         or any(term in searchable for term in rejection_terms)
     )
     accepted = (
@@ -1245,9 +1257,7 @@ class Bet9jaBrowser:
                         for frame in virtual_frames(self.page)
                         if frame.locator("body").count()
                     )
-                    if betslip_count(self.page) == 0 or any(
-                        term in visible_text for term in confirmation_terms
-                    ):
+                    if any(term in visible_text for term in confirmation_terms):
                         submission_verified = True
                         submission_evidence = submission_evidence or {
                             "state": "accepted", "source": "ui",

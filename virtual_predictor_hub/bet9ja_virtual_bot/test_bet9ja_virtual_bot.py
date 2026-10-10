@@ -104,6 +104,22 @@ class PredictionSystemTests(unittest.TestCase):
         self.assertEqual(result["state"], "accepted")
         self.assertEqual(result["ticket_id"], "T-1")
 
+    def test_ticket_response_does_not_reject_zero_error_code_key(self):
+        result = classify_ticket_response(
+            200, {"statusCode": 0, "data": [[{"code": 0, "errorCode": 0}]]}
+        )
+        self.assertEqual(result["state"], "accepted")
+
+    def test_ticket_response_rejects_nonzero_native_result_code(self):
+        result = classify_ticket_response(
+            200, {"statusCode": 0, "data": [[{"code": 703}]]}
+        )
+        self.assertEqual(result["state"], "rejected")
+
+    def test_ticket_response_does_not_accept_unrelated_generic_id(self):
+        result = classify_ticket_response(200, {"id": "request-id"})
+        self.assertEqual(result["state"], "uncertain")
+
     def test_ticket_request_capture_removes_customer_identity(self):
         payload = [{
             "version": "2.2",
