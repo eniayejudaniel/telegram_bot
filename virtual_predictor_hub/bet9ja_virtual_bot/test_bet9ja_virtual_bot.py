@@ -9,12 +9,31 @@ from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
 from bet9ja_virtual_betslip import (
     Bet9jaBrowser,
     PreSubmissionError,
+    activate_league,
     classify_ticket_response,
     frame_matches_league,
 )
 
 
 class PredictionSystemTests(unittest.TestCase):
+    def test_animated_league_tab_uses_dom_click_fallback(self):
+        control = MagicMock()
+        control.is_visible.return_value = True
+        control.click.side_effect = RuntimeError("element is not stable")
+        locator = MagicMock()
+        locator.count.return_value = 1
+        locator.nth.return_value = control
+        frame = MagicMock()
+        frame.get_by_text.return_value = locator
+        page = MagicMock()
+        page.main_frame = MagicMock()
+        page.frames = [page.main_frame, frame]
+
+        activate_league(page, "English League")
+
+        control.click.assert_called_once_with(timeout=2_000)
+        control.evaluate.assert_called_once_with("element => element.click()")
+
     def test_browser_failure_before_click_is_retryable(self):
         browser = Bet9jaBrowser.__new__(Bet9jaBrowser)
         browser.page = MagicMock()
@@ -28,6 +47,16 @@ class PredictionSystemTests(unittest.TestCase):
 
         with self.assertRaisesRegex(PreSubmissionError, "browser pipe closed"):
             browser.prepare("message", stake=100, submit=True)
+
+    def test_browser_restart_closes_before_starting(self):
+        browser = Bet9jaBrowser.__new__(Bet9jaBrowser)
+        calls = []
+        browser._diagnostic = MagicMock()
+        browser.close = MagicMock(side_effect=lambda: calls.append("close"))
+        browser.start = MagicMock(side_effect=lambda: calls.append("start") or browser)
+
+        self.assertIs(browser.restart(), browser)
+        self.assertEqual(calls, ["close", "start"])
 
     def test_virtual_frame_is_bound_to_requested_league(self):
         english = SimpleNamespace(

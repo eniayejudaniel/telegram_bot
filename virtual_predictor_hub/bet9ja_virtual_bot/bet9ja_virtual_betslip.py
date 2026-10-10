@@ -363,7 +363,15 @@ def activate_league(page: Any, league: str) -> None:
                 )
             )
         if control is not None:
-            control.click()
+            try:
+                # Animated virtual navigation can remain perpetually "unstable"
+                # to Playwright even though the tab is visible and usable. Do
+                # not spend a third of the betting window waiting on it.
+                control.click(timeout=2_000)
+            except Exception:
+                # Native DOM click bubbles to the launcher's delegated handler
+                # while avoiding Playwright's layout-stability requirement.
+                control.evaluate("element => element.click()")
             page.wait_for_timeout(250)
             return
     # Bundesliga is the launcher's default tab and is rendered as a logo with
@@ -1194,13 +1202,29 @@ class Bet9jaBrowser:
         }
 
     def close(self) -> None:
-        if self.context is not None and self._owns_browser:
-            self.context.close()
-        if self._browser is not None and self._owns_browser:
-            self._browser.close()
-        if self._playwright is not None:
-            self._playwright.stop()
-        self.page = self.context = self._browser = self._playwright = None
+        try:
+            if self.context is not None and self._owns_browser:
+                self.context.close()
+        except Exception:
+            pass
+        try:
+            if self._browser is not None and self._owns_browser:
+                self._browser.close()
+        except Exception:
+            pass
+        try:
+            if self._playwright is not None:
+                self._playwright.stop()
+        except Exception:
+            pass
+        finally:
+            self.page = self.context = self._browser = self._playwright = None
+
+    def restart(self) -> "Bet9jaBrowser":
+        """Replace a degraded browser while retaining persisted login state."""
+        self._diagnostic("browser_restart_requested")
+        self.close()
+        return self.start()
 
     def __enter__(self) -> "Bet9jaBrowser":
         return self.start()

@@ -657,6 +657,18 @@ def run_once(
                 db.executemany("DELETE FROM predictions WHERE id=?", [(value,) for value in inserted_ids])
                 db.commit()
                 logging.exception("Bet9ja pre-submission automation failed; ticket released for retry")
+                try:
+                    # The shell can stay alive while its product odds frames
+                    # are blank. Replace it before the next safe retry.
+                    if bet_browser is not None:
+                        bet_browser.restart()
+                        logging.info(
+                            "Bet9ja browser restarted after pre-submission failure"
+                        )
+                except Exception:
+                    logging.exception(
+                        "Bet9ja browser restart after ticket failure failed"
+                    )
                 lines.append(f"Bet automation: RETRYABLE — {error}")
             except Exception as error:
                 logging.exception("Bet9ja bet automation failed")
