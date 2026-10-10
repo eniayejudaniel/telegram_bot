@@ -1,6 +1,7 @@
 import unittest
 import os
 import sqlite3
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -20,29 +21,38 @@ from bet9ja_virtual_betslip import (
 
 
 class PredictionSystemTests(unittest.TestCase):
-    @patch("bet9ja_virtual_betslip._live_market_price", return_value=1.22)
-    def test_direct_ticket_uses_rgs_units_and_market_identifiers(self, _price):
+    @patch("bet9ja_virtual_betslip._live_market_outcome", return_value={
+        "_oid": 8583446854, "_fid": 12, "fieldname": "u", "value": "1.22"
+    })
+    def test_direct_ticket_uses_rgs_units_and_market_identifiers(self, _outcome):
         details = [{
-            "match_id": 123, "timestamp": 4_000_000_000,
+            "match_id": 123, "timestamp": int(time.time()) + 60,
             "home_id": 1, "away_id": 2, "home": "Home", "away": "Away",
             "league": "Bundesliga", "market": "under_3_5", "odds": 1.22,
-            "round": 5,
+            "season": 99, "round": 5,
         }]
         payload = build_direct_ticket(details, 100, "customer")
         selection = payload[0]["selections"][0]
         self.assertEqual(selection["odds"], 12200)
         self.assertEqual(
             selection["id"],
-            "uof:6/sr:sport:1/vf:match:123/18/13?total=3.5",
+            "18/13?total=3.5",
+        )
+        self.assertEqual(
+            selection["eventId"],
+            "123",
         )
         self.assertEqual(payload[0]["bets"][0]["stake"]["value"], "1000000")
 
-    @patch("bet9ja_virtual_betslip._live_market_price", return_value=1.30)
-    def test_direct_ticket_rejects_changed_odds(self, _price):
+    @patch("bet9ja_virtual_betslip._live_market_outcome", return_value={
+        "_oid": 8583446854, "_fid": 11, "fieldname": "o", "value": "1.30"
+    })
+    def test_direct_ticket_rejects_changed_odds(self, _outcome):
         details = [{
-            "match_id": 123, "timestamp": 4_000_000_000,
+            "match_id": 123, "timestamp": int(time.time()) + 60,
             "home_id": 1, "away_id": 2, "home": "Home", "away": "Away",
             "league": "English League", "market": "over_1_5", "odds": 1.22,
+            "season": 99, "round": 5,
         }]
         with self.assertRaisesRegex(PreSubmissionError, "Odds changed"):
             build_direct_ticket(details, 100, "customer")

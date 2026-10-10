@@ -205,7 +205,7 @@ def _get_json(url: str, timeout: float = 6) -> dict[str, Any]:
         return json.load(response)
 
 
-def _live_market_price(match_id: int, market: str) -> float:
+def _live_market_outcome(match_id: int, market: str) -> dict[str, Any]:
     data = _get_json(f"{ODDS_FEED_BASE}/match_odds2/{match_id}")
     try:
         match = data["doc"][0]["data"]
@@ -227,8 +227,12 @@ def _live_market_price(match_id: int, market: str) -> float:
         ):
             if item.get("status") not in (None, "open"):
                 raise PreSubmissionError(f"Market {market} is closed for match {match_id}")
-            return float(item["value"])
+            return item
     raise PreSubmissionError(f"Market {market} is unavailable for match {match_id}")
+
+
+def _live_market_price(match_id: int, market: str) -> float:
+    return float(_live_market_outcome(match_id, market)["value"])
 
 
 def build_direct_ticket(
@@ -239,30 +243,34 @@ def build_direct_ticket(
         raise PreSubmissionError("Direct ticket details are missing")
     selections = []
     for index, item in enumerate(details):
-        required = ("match_id", "timestamp", "home_id", "away_id", "home", "away",
-                    "league", "market", "odds")
+        required = ("match_id", "timestamp", "season", "round", "home_id",
+                    "away_id", "home", "away", "league", "market", "odds")
         missing = [key for key in required if item.get(key) is None]
         if missing:
             raise PreSubmissionError(
                 f"Direct ticket leg is missing fields: {', '.join(missing)}"
             )
         kickoff = int(item["timestamp"])
+        if kickoff > time.time() + 90:
+            raise PreSubmissionError(
+                f"Betting window is not open yet for match {item['match_id']}"
+            )
         if kickoff <= time.time() + 5:
             raise PreSubmissionError(
                 f"Betting window is closed or too close for match {item['match_id']}"
             )
-        live_odds = _live_market_price(int(item["match_id"]), item["market"])
+        live_outcome = _live_market_outcome(int(item["match_id"]), item["market"])
+        live_odds = float(live_outcome["value"])
         if abs(live_odds - float(item["odds"])) > ODDS_TOLERANCE:
             raise PreSubmissionError(
                 f"Odds changed for match {item['match_id']}: "
                 f"expected {float(item['odds']):.2f}, live {live_odds:.2f}"
             )
         mapping = DIRECT_MARKETS[item["market"]]
-        event_id = f"vf:match:{int(item['match_id'])}"
-        base = (
-            f"uof:6/sr:sport:1/{event_id}/"
-            f"{mapping['market']}/{mapping['outcome']}"
-        )
+        # The retail widget sends its native matchId to the launcher, which
+        # maps the selected market/outcome to the UOF market identifier.
+        event_id = str(int(item["match_id"]))
+        base = f"{mapping['market']}/{mapping['outcome']}"
         if mapping["specifier"]:
             base += f"?{mapping['specifier']}"
         selections.append({
@@ -624,6 +632,39 @@ def find_event_scope(frame: Any, selection: dict[str, Any]) -> Any | None:
     return best
 
 
+def find_event_scope_with_market(
+    frame: Any, selection: dict[str, Any]
+) -> Any | None:
+    """Return the visible duplicate match row containing the requested offer.
+
+    The launcher keeps the collapsed row in the DOM when ``+N`` is opened and
+    inserts an expanded copy beside it.  Team names alone therefore select the
+    wrong row after expansion; the market's stable data-name disambiguates it.
+    """
+    home_needle = comparable(selection["home"])
+    away_needle = comparable(selection["away"])
+    market_part = MARKET_DATA_NAME_PARTS[selection["market"]]
+    for selector in (".sr-matchRow", ".sr-odds-row"):
+        for row in frame.locator(selector).element_handles():
+            try:
+                text = row.inner_text()
+                if not row.is_visible():
+                    continue
+                if not (
+                    text_contains_team(text, home_needle)
+                    and text_contains_team(text, away_needle)
+                ):
+                    continue
+                offers = row.query_selector_all(
+                    f'a.sr-oddsButton[data-name*="{market_part}"]'
+                )
+                if any(offer.is_visible() for offer in offers):
+                    return row
+            except Exception:
+                continue
+    return None
+
+
 def click_selection_in_scope(scope: Any, selection: dict[str, Any]) -> str:
     labels = tuple(comparable(label) for label in MARKET_LABELS[selection["market"]])
     expected_odds = f'{selection["expected_odds"]:.2f}'
@@ -739,10 +780,9 @@ def click_selection_in_scope(scope: Any, selection: dict[str, Any]) -> str:
 def mark_selection(
     page: Any, selection: dict[str, Any], timeout_seconds: float = 65
 ) -> dict[str, Any]:
-    frames = [
-        frame for frame in virtual_frames(page)
-        if frame_matches_league(frame, selection["league"])
-    ]
+    # The executable market offer is rendered by the Bet9ja launcher frame;
+    # the product iframe contains video/results and is not the betting DOM.
+    frames = [frame for frame in virtual_frames(page) if "bwg.html" in frame.url]
     fixture_already_visible = any(
         find_event_scope(frame, selection) is not None for frame in frames
     )
@@ -762,9 +802,7 @@ def mark_selection(
     scope = None
     frame = None
     while time.monotonic() < deadline and scope is None:
-        for candidate_frame in virtual_frames(page):
-            if not frame_matches_league(candidate_frame, selection["league"]):
-                continue
+        for candidate_frame in frames:
             try:
                 candidate_scope = find_event_scope(candidate_frame, selection)
             except Exception:
@@ -777,10 +815,7 @@ def mark_selection(
     # The launcher occasionally creates the correct product iframe but leaves
     # its document blank under Xvfb. Reload that iframe once, then reacquire it.
     # This is pre-submission recovery and therefore cannot duplicate a wager.
-    recovery_frames = [
-        candidate for candidate in virtual_frames(page)
-        if frame_matches_league(candidate, selection["league"])
-    ]
+    recovery_frames = frames
     frame_has_betting_table = False
     for candidate_frame in recovery_frames:
         try:
@@ -807,9 +842,7 @@ def mark_selection(
             1, min(25, timeout_seconds - 25)
         )
         while time.monotonic() < recovery_deadline and scope is None:
-            for candidate_frame in virtual_frames(page):
-                if not frame_matches_league(candidate_frame, selection["league"]):
-                    continue
+            for candidate_frame in frames:
                 try:
                     candidate_scope = find_event_scope(candidate_frame, selection)
                 except Exception:
@@ -824,13 +857,18 @@ def mark_selection(
             clicked_text = click_selection_in_scope(scope, selection)
         except RuntimeError as initial_error:
             expanded = False
+            # This is the launcher's real expansion control. Avoid clicking a
+            # generic ancestor whose text happens to reduce to ``+20``.
             for candidate in scope.query_selector_all(
-                'button, [role="button"], a, [class*="more" i], div, span'
+                ".sr-additional-markets a, [class*='additional-markets' i] a"
             ):
                 try:
                     text = clean(candidate.inner_text())
                     if re.fullmatch(r"\+\d+", text) and candidate.is_visible():
-                        candidate.click()
+                        try:
+                            candidate.click(timeout=2_000)
+                        except Exception:
+                            candidate.evaluate("element => element.click()")
                         page.wait_for_timeout(250)
                         expanded = True
                         break
@@ -841,7 +879,26 @@ def mark_selection(
             # Expansion can replace the fixture node. Resolve the same fixture
             # again instead of searching the whole page and selecting another
             # match's identically named market.
-            refreshed_scope = find_event_scope(frame, selection)
+            refreshed_scope = None
+            expansion_deadline = time.monotonic() + 5
+            while time.monotonic() < expansion_deadline:
+                # Normally React mutates this same sr-matchRow by appending an
+                # sr-additional-markets-area. Check its retained handle first;
+                # fall back to a DOM-wide lookup if the row was replaced.
+                try:
+                    market_part = MARKET_DATA_NAME_PARTS[selection["market"]]
+                    offers = scope.query_selector_all(
+                        f'a.sr-oddsButton[data-name*="{market_part}"]'
+                    )
+                    if any(offer.is_visible() for offer in offers):
+                        refreshed_scope = scope
+                except Exception:
+                    pass
+                if refreshed_scope is None:
+                    refreshed_scope = find_event_scope_with_market(frame, selection)
+                if refreshed_scope is not None:
+                    break
+                page.wait_for_timeout(100)
             if refreshed_scope is None:
                 raise initial_error
             clicked_text = click_selection_in_scope(refreshed_scope, selection)
@@ -917,8 +974,11 @@ def fill_stake(page: Any, stake: float) -> None:
             stake_input.fill(str(stake))
             entered = clean(stake_input.input_value()).replace(",", "")
             try:
-                entered_value = float(entered)
-            except ValueError as error:
+                numeric = re.search(r"\d+(?:\.\d+)?", entered)
+                if numeric is None:
+                    raise ValueError(entered)
+                entered_value = float(numeric.group(0))
+            except (TypeError, ValueError) as error:
                 raise RuntimeError(
                     f"Betslip stake input contains an invalid value: {entered!r}"
                 ) from error
