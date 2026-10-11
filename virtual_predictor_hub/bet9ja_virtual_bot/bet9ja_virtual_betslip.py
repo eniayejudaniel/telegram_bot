@@ -83,6 +83,28 @@ class SubmissionUncertainError(RuntimeError):
     """A ticket may have reached Bet9ja and must never be retried automatically."""
 
 
+def wager_session_expired(payload: Any) -> bool:
+    """Recognize Bet9ja's expired wagering-session rejection contract."""
+    values: list[Any] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+        else:
+            values.append(value)
+
+    visit(payload)
+    text = " ".join(str(value).lower() for value in values)
+    return any(str(value) == "21004" for value in values) or any(
+        marker in text
+        for marker in ("session_expired", "session expired", "buy in (reserve) failed")
+    )
+
+
 def load_env(file_path: str | Path = DEFAULT_ENV_FILE) -> None:
     """Load an .env file without overwriting existing process variables."""
     path = Path(file_path)
@@ -1079,6 +1101,8 @@ class Bet9jaBrowser:
         self.context = None
         self.page = None
         self._owns_browser = True
+        self._authenticated_at = 0.0
+        self._session_invalid = False
 
     @property
     def storage_state_path(self) -> Path:
@@ -1220,6 +1244,8 @@ class Bet9jaBrowser:
             self.close()
             raise
         self._diagnostic("warmup_complete")
+        self._authenticated_at = time.monotonic()
+        self._session_invalid = False
         return self
 
     def _authenticate_and_warm(self) -> None:
@@ -1257,6 +1283,18 @@ class Bet9jaBrowser:
     def keep_warm(self) -> bool:
         """Fast health check; recover the page only when its launcher disappeared."""
         self.start()
+        refresh_seconds = max(
+            300.0, float(os.getenv("BET9JA_SESSION_REFRESH_SECONDS", "3600"))
+        )
+        session_age = time.monotonic() - self._authenticated_at
+        if self._session_invalid or session_age >= refresh_seconds:
+            self._diagnostic(
+                "proactive_session_refresh",
+                reason="rejected" if self._session_invalid else "age",
+                age_seconds=round(session_age, 1),
+            )
+            self.restart(force_relogin=True)
+            return True
         frames = self.page.frames
         launcher_ready = False
         for frame in frames:
@@ -1548,6 +1586,8 @@ class Bet9jaBrowser:
                         except Exception as error:
                             payload = {"response_read_error": self._safe_text(error)}
                         submission_evidence = classify_ticket_response(response.status, payload)
+                        if wager_session_expired(payload):
+                            self._session_invalid = True
                         self._diagnostic(
                             "ticket_submission_response",
                             **submission_evidence,
@@ -1631,10 +1671,17 @@ class Bet9jaBrowser:
         finally:
             self.page = self.context = self._browser = self._playwright = None
 
-    def restart(self) -> "Bet9jaBrowser":
+    def restart(self, *, force_relogin: bool = False) -> "Bet9jaBrowser":
         """Replace a degraded browser while retaining persisted login state."""
-        self._diagnostic("browser_restart_requested")
+        self._diagnostic(
+            "browser_restart_requested", force_relogin=force_relogin
+        )
         self.close()
+        if force_relogin:
+            # The wagering session can expire while the account shell and its
+            # cached balance still look authenticated. Removing storage state
+            # forces a credential login and obtains a fresh RGS session.
+            self.storage_state_path.unlink(missing_ok=True)
         return self.start()
 
     def __enter__(self) -> "Bet9jaBrowser":

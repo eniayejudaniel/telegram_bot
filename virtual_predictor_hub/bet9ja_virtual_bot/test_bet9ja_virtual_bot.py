@@ -16,6 +16,7 @@ from bet9ja_virtual_betslip import (
     frame_matches_league,
     parse_prediction_message,
     sanitize_ticket_request,
+    wager_session_expired,
     build_direct_ticket,
 )
 
@@ -117,6 +118,19 @@ class PredictionSystemTests(unittest.TestCase):
         self.assertIs(browser.restart(), browser)
         self.assertEqual(calls, ["close", "start"])
 
+    def test_expired_browser_age_forces_credential_session_refresh(self):
+        browser = Bet9jaBrowser.__new__(Bet9jaBrowser)
+        browser._authenticated_at = time.monotonic() - 4_000
+        browser._session_invalid = False
+        browser.start = MagicMock(return_value=browser)
+        browser.restart = MagicMock(return_value=browser)
+        browser._diagnostic = MagicMock()
+
+        with patch.dict(os.environ, {"BET9JA_SESSION_REFRESH_SECONDS": "3600"}):
+            self.assertTrue(browser.keep_warm())
+
+        browser.restart.assert_called_once_with(force_relogin=True)
+
     def test_virtual_frame_is_bound_to_requested_league(self):
         english = SimpleNamespace(
             url="https://vflive-vs001.akamaized.net/vfel/desktop/index"
@@ -178,6 +192,16 @@ class PredictionSystemTests(unittest.TestCase):
     def test_ticket_response_rejects_business_error_with_http_200(self):
         result = classify_ticket_response(200, {"success": False, "message": "Insufficient funds"})
         self.assertEqual(result["state"], "rejected")
+
+    def test_wager_session_expiry_contract_is_detected(self):
+        payload = {
+            "data": [[{
+                "code": 21004,
+                "message": "REJECTED_WG_SESSION_EXPIRED: Buy in (reserve) failed",
+            }]]
+        }
+        self.assertTrue(wager_session_expired(payload))
+        self.assertFalse(wager_session_expired({"data": [[{"code": 0}]]}))
 
     def test_ticket_response_keeps_unrecognized_200_uncertain(self):
         result = classify_ticket_response(200, {"message": "request received"})
