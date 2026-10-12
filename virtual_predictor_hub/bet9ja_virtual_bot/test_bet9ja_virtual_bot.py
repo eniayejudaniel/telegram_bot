@@ -11,6 +11,7 @@ from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
 from bet9ja_virtual_betslip import (
     Bet9jaBrowser,
     PreSubmissionError,
+    accumulator_request_error,
     activate_league,
     classify_ticket_response,
     frame_matches_league,
@@ -188,6 +189,28 @@ class PredictionSystemTests(unittest.TestCase):
         self.assertEqual(sanitized[0]["bets"][0]["stake"]["value"], "100")
         self.assertNotIn("id", sanitized[0]["sender"]["endCustomer"])
         self.assertTrue(sanitized[0]["sender"]["endCustomer"]["present"])
+
+    def test_accumulator_request_contract_accepts_full_multi(self):
+        payload = [{
+            "selections": [{"id": "a"}, {"id": "b"}],
+            "bets": [{
+                "selectionRefs": [{"selectionIndex": 0}, {"selectionIndex": 1}],
+                "selectedSystems": [2],
+                "stake": {"type": "total", "value": "1000000"},
+            }],
+        }]
+        self.assertIsNone(accumulator_request_error(payload, 2, 100))
+
+    def test_accumulator_request_contract_blocks_singles(self):
+        payload = [{
+            "selections": [{"id": "a"}, {"id": "b"}],
+            "bets": [{
+                "selectionRefs": [{"selectionIndex": 0}, {"selectionIndex": 1}],
+                "selectedSystems": [1],
+                "stake": {"type": "unit", "value": "1000000"},
+            }],
+        }]
+        self.assertIn("selectedSystems", accumulator_request_error(payload, 2, 100))
 
     def test_ticket_response_rejects_business_error_with_http_200(self):
         result = classify_ticket_response(200, {"success": False, "message": "Insufficient funds"})

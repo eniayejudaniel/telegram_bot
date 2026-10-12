@@ -221,6 +221,39 @@ def sanitize_ticket_request(payload: Any) -> Any:
     return clone
 
 
+def accumulator_request_error(
+    payload: Any, expected_legs: int, expected_stake: float
+) -> str | None:
+    """Return why a native ticket request is not the intended accumulator."""
+    tickets = payload if isinstance(payload, list) else [payload]
+    if len(tickets) != 1 or not isinstance(tickets[0], dict):
+        return "expected exactly one ticket"
+    ticket = tickets[0]
+    selections = ticket.get("selections")
+    bets = ticket.get("bets")
+    if not isinstance(selections, list) or len(selections) != expected_legs:
+        return f"expected {expected_legs} selections"
+    if not isinstance(bets, list) or len(bets) != 1 or not isinstance(bets[0], dict):
+        return "expected exactly one accumulator bet"
+    bet = bets[0]
+    if bet.get("selectedSystems") != [expected_legs]:
+        return f"expected selectedSystems [{expected_legs}]"
+    refs = bet.get("selectionRefs")
+    ref_indexes = (
+        sorted(ref.get("selectionIndex") for ref in refs if isinstance(ref, dict))
+        if isinstance(refs, list) else []
+    )
+    if ref_indexes != list(range(expected_legs)):
+        return "accumulator does not reference every selection exactly once"
+    stake = bet.get("stake")
+    if not isinstance(stake, dict) or stake.get("type") != "total":
+        return "stake type is not total"
+    expected_value = str(int(round(expected_stake * 10_000)))
+    if str(stake.get("value", "")) != expected_value:
+        return f"stake value does not equal {expected_value}"
+    return None
+
+
 def _get_json(url: str, timeout: float = 6) -> dict[str, Any]:
     request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urlopen(request, timeout=timeout) as response:
@@ -969,12 +1002,50 @@ def calculate_stake(capital: float) -> float:
     return round(capital / 10, 2)
 
 
-def fill_stake(page: Any, stake: float) -> None:
+def enforce_accumulator_mode(page: Any, expected_legs: int) -> None:
+    """Select and verify Bet9ja's full multi/accumulator bet mode."""
+    if expected_legs < 2:
+        raise RuntimeError("An accumulator requires at least two selections")
+    for frame in virtual_frames(page):
+        if "bwg.html" not in frame.url:
+            continue
+        multi = first_visible(
+            frame.locator(".sr-bs-systems-nav__button").filter(has_text="Multi")
+        )
+        if multi is None:
+            continue
+        multi.click(timeout=2_000)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            active = first_visible(
+                frame.locator(
+                    ".sr-bs-systems-nav__button--active"
+                ).filter(has_text="Multi")
+            )
+            stake_input = first_visible(frame.locator("input#multi"))
+            try:
+                body_text = frame.locator("body").inner_text()
+            except Exception:
+                body_text = ""
+            if active is not None and stake_input is not None and "Total Odds" in body_text:
+                return
+            page.wait_for_timeout(100)
+        raise RuntimeError(
+            "Bet9ja did not activate Multi accumulator mode; refusing to stake as Singles"
+        )
+    raise RuntimeError("Bet9ja Multi accumulator control was not found")
+
+
+def fill_stake(page: Any, stake: float, *, accumulator: bool = False) -> None:
     if stake <= 0:
         raise ValueError("Stake must be a positive number")
     selector = (
-        'input[placeholder*="stake" i], input[name*="stake" i], '
-        'input[data-testid*="stake" i], input[type="number"]'
+        "input#multi"
+        if accumulator
+        else (
+            'input[placeholder*="stake" i], input[name*="stake" i], '
+            'input[data-testid*="stake" i], input[type="number"]'
+        )
     )
     for frame in [page.main_frame, *virtual_frames(page)]:
         stake_input = first_visible(frame.locator(selector))
@@ -983,7 +1054,7 @@ def fill_stake(page: Any, stake: float) -> None:
         except Exception:
             frame_text = ""
         is_launcher = "bwg.html" in frame.url or "BETSLIP" in frame_text.upper()
-        if stake_input is None and is_launcher:
+        if stake_input is None and is_launcher and not accumulator:
             # The launcher currently renders the stake field as an unlabelled
             # text input. It is safe to use only after login and only inside
             # the betslip launcher frame, excluding credential fields.
@@ -1009,7 +1080,8 @@ def fill_stake(page: Any, stake: float) -> None:
                     f"Betslip stake mismatch: expected {stake}, found {entered_value}"
                 )
             return
-    raise RuntimeError("Visible betslip stake input was not found")
+    description = "Multi accumulator" if accumulator else "betslip"
+    raise RuntimeError(f"Visible {description} stake input was not found")
 
 
 def find_place_bet_button(page: Any) -> Any | None:
@@ -1489,7 +1561,8 @@ class Bet9jaBrowser:
                     f"Betslip integrity failure: expected {expected_legs} legs, "
                     f"but Bet9ja retained {actual_legs}"
                 )
-            fill_stake(self.page, effective_stake)
+            enforce_accumulator_mode(self.page, expected_legs)
+            fill_stake(self.page, effective_stake, accumulator=True)
             if time.monotonic() >= deadline:
                 raise RuntimeError(
                     "Ticket preparation exceeded its time budget before submission"
@@ -1539,6 +1612,7 @@ class Bet9jaBrowser:
                     "Submission blocked: set BET9JA_ALLOW_REAL_BET=true as well as requesting submit"
                 )
             ticket_responses: list[Any] = []
+            contract_errors: list[str] = []
 
             def capture_ticket_request(request: Any) -> None:
                 url = request.url.lower().split("?", 1)[0].rstrip("/")
@@ -1562,8 +1636,33 @@ class Bet9jaBrowser:
                 if url.endswith("/tickets") and response.request.method.upper() != "GET":
                     ticket_responses.append(response)
 
+            def enforce_ticket_contract(route: Any, request: Any) -> None:
+                if request.method.upper() == "GET":
+                    route.continue_()
+                    return
+                try:
+                    payload = request.post_data_json
+                    error = accumulator_request_error(
+                        payload, len(ticket["selections"]), effective_stake
+                    )
+                except Exception as contract_error:
+                    error = "could not parse native ticket request: " + self._safe_text(
+                        contract_error
+                    )
+                if error:
+                    contract_errors.append(error)
+                    self._diagnostic(
+                        "ticket_submission_blocked", reason=error,
+                        payload=sanitize_ticket_request(payload)
+                        if "payload" in locals() else None,
+                    )
+                    route.abort()
+                    return
+                route.continue_()
+
             self.page.on("request", capture_ticket_request)
             self.page.on("response", capture_ticket_response)
+            self.page.route("**/tickets**", enforce_ticket_contract)
             place_bet_button.click()
             submitted = True
             confirmation_deadline = time.monotonic() + 30
@@ -1574,6 +1673,11 @@ class Bet9jaBrowser:
             try:
                 processed_responses = 0
                 while time.monotonic() < confirmation_deadline:
+                    if contract_errors:
+                        raise RuntimeError(
+                            "Blocked invalid Bet9ja ticket before transmission: "
+                            + contract_errors[0]
+                        )
                     while processed_responses < len(ticket_responses):
                         response = ticket_responses[processed_responses]
                         processed_responses += 1
@@ -1621,6 +1725,7 @@ class Bet9jaBrowser:
             finally:
                 self.page.remove_listener("request", capture_ticket_request)
                 self.page.remove_listener("response", capture_ticket_response)
+                self.page.unroute("**/tickets**", enforce_ticket_contract)
             if not submission_verified:
                 failure_artifact = self.diagnostics_path.with_name(
                     f"bet9ja_submission_uncertain_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.png"
