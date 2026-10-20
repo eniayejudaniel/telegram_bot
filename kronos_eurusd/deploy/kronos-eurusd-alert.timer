@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Kronos EURUSD paper alert hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=kronos-eurusd-alert.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kronos EURUSD</title><script src="https://unpkg.com/lightweight-charts@5.0.8/dist/lightweight-charts.standalone.production.js"></script>
+<style>body{margin:0;background:#0b1220;color:#dbe7ff;font:14px system-ui}.wrap{max-width:1200px;margin:auto;padding:24px}.head{display:flex;justify-content:space-between;align-items:center}.card{background:#111c30;border:1px solid #24334e;border-radius:12px;padding:16px;margin:14px 0}#chart{height:650px}.pill{padding:7px 12px;border-radius:99px;background:#253b63}button{background:#3274d9;color:#fff;border:0;border-radius:7px;padding:9px 14px;cursor:pointer}.muted{color:#91a3c1}</style></head>
+<body><div class="wrap"><div class="head"><div><h1>Kronos · EURUSD 1H</h1><div class="muted">512-candle context · 24-candle forecast · 100 samples</div></div><button onclick="refreshData()">Run forecast</button></div>
+<div class="card"><span id="side" class="pill">Loading…</span> <span id="rules"></span></div><div id="chart" class="card"></div></div>
+<script>
+const chart=LightweightCharts.createChart(document.getElementById('chart'),{layout:{background:{color:'#111c30'},textColor:'#b8c8e5'},grid:{vertLines:{color:'#1c2940'},horzLines:{color:'#1c2940'}},timeScale:{timeVisible:true,secondsVisible:false}});
+const candles=chart.addSeries(LightweightCharts.CandlestickSeries,{upColor:'#20c997',downColor:'#ff5c75',borderVisible:false,wickUpColor:'#20c997',wickDownColor:'#ff5c75'});
+const predicted=chart.addSeries(LightweightCharts.LineSeries,{color:'#f4c95d',lineWidth:3,title:'Kronos predicted close'});
+const ts=x=>Math.floor(new Date(x).getTime()/1000);
+function draw(d){candles.setData(d.history.map(x=>({time:ts(x.timestamp),open:x.open,high:x.high,low:x.low,close:x.close})));predicted.setData([{time:ts(d.history.at(-1).timestamp),value:d.history.at(-1).close},...d.forecast.map(x=>({time:ts(x.timestamp),value:x.close}))]);const s=d.signal;document.getElementById('side').textContent=s.side+' · '+s.regime;document.getElementById('rules').textContent=`Entry ${s.entry.toFixed(5)} · Stop ${s.stop?.toFixed(5)??'—'} · Target ${s.target?.toFixed(5)??'—'} · Exit after ${s.time_exit_bars}h`;chart.timeScale().fitContent()}
+async function load(){draw(await (await fetch('/api/latest')).json())}async function refreshData(){draw(await (await fetch('/api/refresh',{method:'POST'})).json())}load();addEventListener('resize',()=>chart.applyOptions({width:document.getElementById('chart').clientWidth}));
+</script></body></html>

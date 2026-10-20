@@ -1,0 +1,12 @@
+[Unit]
+Description=Monitor Kronos EURUSD paper position exits
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/kronos-eurusd
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/kronos-eurusd/.venv/bin/python monitor.py
+TimeoutStartSec=5min

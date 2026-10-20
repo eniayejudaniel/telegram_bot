@@ -1,0 +1,14 @@
+numpy
+pandas>=2.2.2
+torch>=2.0.0
+
+einops==0.8.1
+huggingface_hub==0.33.1
+matplotlib>=3.9.3
+tqdm==4.67.1
+safetensors==0.6.2
+Flask>=3.0.0
+yfinance>=0.2.54
+python-dotenv>=1.0.1
+requests>=2.32.0
+gunicorn>=23.0.0; platform_system != "Windows"

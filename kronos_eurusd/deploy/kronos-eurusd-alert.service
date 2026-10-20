@@ -1,0 +1,12 @@
+[Unit]
+Description=Generate Kronos EURUSD forecast and send paper alert
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/kronos-eurusd
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/kronos-eurusd/.venv/bin/python app.py forecast --alert
+TimeoutStartSec=45min
