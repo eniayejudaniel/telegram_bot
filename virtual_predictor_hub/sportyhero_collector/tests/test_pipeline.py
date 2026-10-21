@@ -8,8 +8,8 @@ from modeling import LogisticModel, features, samples, score
 from storage import connect, insert_rounds, load_rounds
 
 
-class ReconstructionTests(unittest.TestCase):
-    def test_recovered_schema_and_duplicate_safety(self):
+class PipelineTests(unittest.TestCase):
+    def test_schema_and_duplicate_safety(self):
         with tempfile.TemporaryDirectory() as directory:
             db = connect(Path(directory) / "rounds.sqlite3")
             item = {"id": 7, "houseCoefficient": 1.25,
