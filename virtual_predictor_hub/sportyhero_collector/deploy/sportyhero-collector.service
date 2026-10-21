@@ -1,0 +1,23 @@
+[Unit]
+Description=SportyHero read-only multiplier collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sportyhero
+Group=sportyhero
+WorkingDirectory=/opt/virtual_predictor_hub/sportyhero_collector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/xvfb-run -a .venv/bin/python collector.py --db data/sportyhero.sqlite3 --interval 1
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/virtual_predictor_hub/sportyhero_collector/data
+
+[Install]
+WantedBy=multi-user.target
+

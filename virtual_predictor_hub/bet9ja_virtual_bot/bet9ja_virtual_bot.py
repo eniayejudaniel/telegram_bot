@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from bet9ja_virtual_betslip import Bet9jaBrowser
+from bet9ja_virtual_betslip import Bet9jaBrowser, PreSubmissionError
 
 from prediction_engine import (
     FEATURE_NAMES,
@@ -618,7 +618,7 @@ def run_once(
                 len(inserted), combined_odds, target,
             )
             return 0
-        db.execute(
+        combination_cursor = db.execute(
             "INSERT INTO combinations(created_at,match_ids,markets,combined_odds,estimated_probability,strategy) VALUES(?,?,?,?,?,?)",
             (now, json.dumps([x["match_id"] for x in inserted]), json.dumps([x["market"] for x in inserted]), combined_odds, joint, strategy),
         )
@@ -639,7 +639,9 @@ def run_once(
             stake = float(os.getenv("BET9JA_TEST_STAKE", "100")) if test_mode else None
             try:
                 if bet_browser is None:
-                    raise RuntimeError("Bet9ja warm browser service is unavailable")
+                    raise PreSubmissionError(
+                        "Bet9ja warm browser service is unavailable"
+                    )
                 bet_result = bet_browser.prepare(
                     ticket_message,
                     stake=stake,
@@ -648,6 +650,26 @@ def run_once(
                 lines.append(
                     f"Bet automation: {bet_result['mode']} — stake ₦{bet_result['stake']:,.2f}"
                 )
+            except PreSubmissionError as error:
+                # No submission was attempted. Remove only this new ticket so
+                # the warm browser can retry it on the next polling cycle.
+                db.execute("DELETE FROM combinations WHERE id=?", (combination_cursor.lastrowid,))
+                db.executemany("DELETE FROM predictions WHERE id=?", [(value,) for value in inserted_ids])
+                db.commit()
+                logging.exception("Bet9ja pre-submission automation failed; ticket released for retry")
+                try:
+                    # The shell can stay alive while its product odds frames
+                    # are blank. Replace it before the next safe retry.
+                    if bet_browser is not None:
+                        bet_browser.restart()
+                        logging.info(
+                            "Bet9ja browser restarted after pre-submission failure"
+                        )
+                except Exception:
+                    logging.exception(
+                        "Bet9ja browser restart after ticket failure failed"
+                    )
+                lines.append(f"Bet automation: RETRYABLE — {error}")
             except Exception as error:
                 logging.exception("Bet9ja bet automation failed")
                 lines.append(f"Bet automation: FAILED — {error}")
@@ -702,14 +724,39 @@ def main() -> None:
     while True:
         try:
             if bet_browser is not None:
-                bet_browser.keep_warm()
-            telegram.process_updates()
+                try:
+                    bet_browser.keep_warm()
+                except Exception:
+                    # A dead Chromium process or Playwright pipe must not block
+                    # prediction polling. Recreate it once, then let run_once
+                    # release any qualifying ticket for retry if recovery fails.
+                    logging.exception(
+                        "Bet9ja warm-browser health check failed; restarting browser"
+                    )
+                    try:
+                        bet_browser.close()
+                        bet_browser.start()
+                        logging.info("Bet9ja browser recovery completed")
+                    except Exception:
+                        logging.exception(
+                            "Bet9ja browser recovery failed; polling will continue"
+                        )
+            try:
+                telegram.process_updates()
+            except Exception:
+                # Telegram availability must never gate time-sensitive betting.
+                logging.exception("Telegram update polling failed; continuing cycle")
             settled = settle(db, state)
             target = float(os.getenv("TARGET_COMBINED_ODDS", "2.00"))
             strategy = os.getenv("STRATEGY_NAME", "conservative_2odds_v1")
             for combo in settle_combinations(db):
                 if combo["odds"] >= target and combo["strategy"] == strategy:
-                    telegram.send(combination_result_message(combo))
+                    try:
+                        telegram.send(combination_result_message(combo))
+                    except Exception:
+                        logging.exception(
+                            "Telegram settlement alert failed; continuing cycle"
+                        )
             created = run_once(db, telegram, models, state, bet_browser)
             logging.info("cycle complete: predictions=%s settled=%s", created, settled)
             local_now = datetime.now(local_tz)

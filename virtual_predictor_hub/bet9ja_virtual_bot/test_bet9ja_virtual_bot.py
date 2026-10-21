@@ -1,12 +1,235 @@
 import unittest
 import os
 import sqlite3
+import time
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
 from prediction_engine import FEATURE_NAMES, LogisticModel, build_combination, build_optimized_combination
 from bet9ja_virtual_bot import forward_gate, passes_market_pattern, target_round
+from bet9ja_virtual_betslip import (
+    Bet9jaBrowser,
+    PreSubmissionError,
+    accumulator_request_error,
+    activate_league,
+    classify_ticket_response,
+    frame_matches_league,
+    parse_prediction_message,
+    sanitize_ticket_request,
+    wager_session_expired,
+    build_direct_ticket,
+)
 
 
 class PredictionSystemTests(unittest.TestCase):
+    @patch("bet9ja_virtual_betslip._live_market_outcome", return_value={
+        "_oid": 8583446854, "_fid": 12, "fieldname": "u", "value": "1.22"
+    })
+    def test_direct_ticket_uses_rgs_units_and_market_identifiers(self, _outcome):
+        details = [{
+            "match_id": 123, "timestamp": int(time.time()) + 60,
+            "home_id": 1, "away_id": 2, "home": "Home", "away": "Away",
+            "league": "Bundesliga", "market": "under_3_5", "odds": 1.22,
+            "season": 99, "round": 5,
+        }]
+        payload = build_direct_ticket(details, 100, "customer")
+        selection = payload[0]["selections"][0]
+        self.assertEqual(selection["odds"], 12200)
+        self.assertEqual(
+            selection["id"],
+            "18/13?total=3.5",
+        )
+        self.assertEqual(
+            selection["eventId"],
+            "123",
+        )
+        self.assertEqual(payload[0]["bets"][0]["stake"]["value"], "1000000")
+
+    @patch("bet9ja_virtual_betslip._live_market_outcome", return_value={
+        "_oid": 8583446854, "_fid": 11, "fieldname": "o", "value": "1.30"
+    })
+    def test_direct_ticket_rejects_changed_odds(self, _outcome):
+        details = [{
+            "match_id": 123, "timestamp": int(time.time()) + 60,
+            "home_id": 1, "away_id": 2, "home": "Home", "away": "Away",
+            "league": "English League", "market": "over_1_5", "odds": 1.22,
+            "season": 99, "round": 5,
+        }]
+        with self.assertRaisesRegex(PreSubmissionError, "Odds changed"):
+            build_direct_ticket(details, 100, "customer")
+
+    def test_prediction_parser_rejects_cross_league_ticket(self):
+        message = (
+            "Bundesliga: A vs B — under_3_5 @ 1.22\n"
+            "Euro League: C vs D — 12 @ 1.25\n"
+            "Combined odds: 1.52"
+        )
+        with self.assertRaisesRegex(ValueError, "must all belong to one league"):
+            parse_prediction_message(message)
+
+    def test_prediction_parser_rejects_inconsistent_combined_odds(self):
+        message = (
+            "Bundesliga: A vs B — under_3_5 @ 1.22\n"
+            "Bundesliga: C vs D — 12 @ 1.25\n"
+            "Combined odds: 1.99"
+        )
+        with self.assertRaisesRegex(ValueError, "combined odds do not match"):
+            parse_prediction_message(message)
+
+    def test_animated_league_tab_uses_dom_click_fallback(self):
+        control = MagicMock()
+        control.is_visible.return_value = True
+        control.click.side_effect = RuntimeError("element is not stable")
+        locator = MagicMock()
+        locator.count.return_value = 1
+        locator.nth.return_value = control
+        frame = MagicMock()
+        frame.get_by_text.return_value = locator
+        page = MagicMock()
+        page.main_frame = MagicMock()
+        page.frames = [page.main_frame, frame]
+
+        activate_league(page, "English League")
+
+        control.click.assert_called_once_with(timeout=2_000)
+        control.evaluate.assert_called_once_with("element => element.click()")
+
+    def test_browser_failure_before_click_is_retryable(self):
+        browser = Bet9jaBrowser.__new__(Bet9jaBrowser)
+        browser.page = MagicMock()
+        browser.page.frames = []
+        browser.ticket_timeout_seconds = 75
+        browser.keep_warm = MagicMock(side_effect=RuntimeError("browser pipe closed"))
+        browser._diagnostic = MagicMock()
+        browser.diagnostics_path = SimpleNamespace(
+            with_name=lambda _name: SimpleNamespace(resolve=lambda: "failure.png")
+        )
+
+        with self.assertRaisesRegex(PreSubmissionError, "browser pipe closed"):
+            browser.prepare("message", stake=100, submit=True)
+
+    def test_browser_restart_closes_before_starting(self):
+        browser = Bet9jaBrowser.__new__(Bet9jaBrowser)
+        calls = []
+        browser._diagnostic = MagicMock()
+        browser.close = MagicMock(side_effect=lambda: calls.append("close"))
+        browser.start = MagicMock(side_effect=lambda: calls.append("start") or browser)
+
+        self.assertIs(browser.restart(), browser)
+        self.assertEqual(calls, ["close", "start"])
+
+    def test_expired_browser_age_forces_credential_session_refresh(self):
+        browser = Bet9jaBrowser.__new__(Bet9jaBrowser)
+        browser._authenticated_at = time.monotonic() - 4_000
+        browser._session_invalid = False
+        browser.start = MagicMock(return_value=browser)
+        browser.restart = MagicMock(return_value=browser)
+        browser._diagnostic = MagicMock()
+
+        with patch.dict(os.environ, {"BET9JA_SESSION_REFRESH_SECONDS": "3600"}):
+            self.assertTrue(browser.keep_warm())
+
+        browser.restart.assert_called_once_with(force_relogin=True)
+
+    def test_virtual_frame_is_bound_to_requested_league(self):
+        english = SimpleNamespace(
+            url="https://vflive-vs001.akamaized.net/vfel/desktop/index"
+        )
+        bundesliga = SimpleNamespace(
+            url="https://vflive-vs001.akamaized.net/vfb/desktop/index"
+        )
+        self.assertTrue(frame_matches_league(english, "English League"))
+        self.assertFalse(frame_matches_league(bundesliga, "English League"))
+
+    def test_ticket_response_accepts_ticket_identifier(self):
+        result = classify_ticket_response(200, {"ticket": {"id": "ABC123"}})
+        self.assertEqual(result["state"], "accepted")
+        self.assertEqual(result["ticket_id"], "ABC123")
+
+    def test_ticket_response_accepts_explicit_success(self):
+        result = classify_ticket_response(201, {"success": True, "status": "placed"})
+        self.assertEqual(result["state"], "accepted")
+
+    def test_ticket_response_accepts_native_rgs_success_contract(self):
+        result = classify_ticket_response(
+            200, {"statusCode": 0, "data": [[{"code": 0, "ticketId": "T-1"}]]}
+        )
+        self.assertEqual(result["state"], "accepted")
+        self.assertEqual(result["ticket_id"], "T-1")
+
+    def test_ticket_response_does_not_reject_zero_error_code_key(self):
+        result = classify_ticket_response(
+            200, {"statusCode": 0, "data": [[{"code": 0, "errorCode": 0}]]}
+        )
+        self.assertEqual(result["state"], "accepted")
+
+    def test_ticket_response_rejects_nonzero_native_result_code(self):
+        result = classify_ticket_response(
+            200, {"statusCode": 0, "data": [[{"code": 703}]]}
+        )
+        self.assertEqual(result["state"], "rejected")
+
+    def test_ticket_response_does_not_accept_unrelated_generic_id(self):
+        result = classify_ticket_response(200, {"id": "request-id"})
+        self.assertEqual(result["state"], "uncertain")
+
+    def test_ticket_request_capture_removes_customer_identity(self):
+        payload = [{
+            "version": "2.2",
+            "sender": {
+                "bookmakerId": 9478,
+                "endCustomer": {"id": "private", "username": "private"},
+            },
+            "selections": [{"id": "selection-1"}],
+            "bets": [{"stake": {"type": "unit", "value": "100"}}],
+        }]
+        sanitized = sanitize_ticket_request(payload)
+        self.assertEqual(sanitized[0]["selections"][0]["id"], "selection-1")
+        self.assertEqual(sanitized[0]["bets"][0]["stake"]["value"], "100")
+        self.assertNotIn("id", sanitized[0]["sender"]["endCustomer"])
+        self.assertTrue(sanitized[0]["sender"]["endCustomer"]["present"])
+
+    def test_accumulator_request_contract_accepts_full_multi(self):
+        payload = [{
+            "selections": [{"id": "a"}, {"id": "b"}],
+            "bets": [{
+                "selectionRefs": [{"selectionIndex": 0}, {"selectionIndex": 1}],
+                "selectedSystems": [2],
+                "stake": {"type": "total", "value": "1000000"},
+            }],
+        }]
+        self.assertIsNone(accumulator_request_error(payload, 2, 100))
+
+    def test_accumulator_request_contract_blocks_singles(self):
+        payload = [{
+            "selections": [{"id": "a"}, {"id": "b"}],
+            "bets": [{
+                "selectionRefs": [{"selectionIndex": 0}, {"selectionIndex": 1}],
+                "selectedSystems": [1],
+                "stake": {"type": "unit", "value": "1000000"},
+            }],
+        }]
+        self.assertIn("selectedSystems", accumulator_request_error(payload, 2, 100))
+
+    def test_ticket_response_rejects_business_error_with_http_200(self):
+        result = classify_ticket_response(200, {"success": False, "message": "Insufficient funds"})
+        self.assertEqual(result["state"], "rejected")
+
+    def test_wager_session_expiry_contract_is_detected(self):
+        payload = {
+            "data": [[{
+                "code": 21004,
+                "message": "REJECTED_WG_SESSION_EXPIRED: Buy in (reserve) failed",
+            }]]
+        }
+        self.assertTrue(wager_session_expired(payload))
+        self.assertFalse(wager_session_expired({"data": [[{"code": 0}]]}))
+
+    def test_ticket_response_keeps_unrecognized_200_uncertain(self):
+        result = classify_ticket_response(200, {"message": "request received"})
+        self.assertEqual(result["state"], "uncertain")
+
     def test_combination_uses_one_market_per_match(self):
         candidates = [
             {"match_id": 1, "market": "12", "probability": 0.84, "odds": 1.25},
