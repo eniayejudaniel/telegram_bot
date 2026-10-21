@@ -1,0 +1,24 @@
+[Unit]
+Description=SportyHero sequence paper-signal validator
+After=sportyhero-collector.service
+Requires=sportyhero-collector.service
+
+[Service]
+Type=simple
+User=sportyhero
+Group=sportyhero
+WorkingDirectory=/opt/virtual_predictor_hub/sportyhero_collector
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/virtual_predictor_hub/sportyhero_collector/.ml-venv/bin/python sequence_signal.py --source data/sportyhero.sqlite3 --ledger data/ml/sequence-signals.sqlite3 --initial-paper-bankroll 2000 --interval 0.5
+Restart=always
+RestartSec=5
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/virtual_predictor_hub/sportyhero_collector/data/ml
+
+[Install]
+WantedBy=multi-user.target
+

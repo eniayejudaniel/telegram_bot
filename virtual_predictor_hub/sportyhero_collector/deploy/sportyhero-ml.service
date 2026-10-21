@@ -1,0 +1,17 @@
+[Unit]
+Description=SportyHero paper-only continuous-learning evaluator
+After=sportyhero-collector.service
+
+[Service]
+Type=oneshot
+User=sportyhero
+Group=sportyhero
+WorkingDirectory=/opt/virtual_predictor_hub/sportyhero_collector
+ExecStart=/opt/virtual_predictor_hub/sportyhero_collector/.ml-venv/bin/python continuous_learning.py --db data/sportyhero.sqlite3 --registry data/ml --min-new-rounds 250 --holdout-rounds 2000
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/virtual_predictor_hub/sportyhero_collector/data/ml
+

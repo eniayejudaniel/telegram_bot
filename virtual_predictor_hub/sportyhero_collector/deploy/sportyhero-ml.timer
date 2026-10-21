@@ -1,0 +1,12 @@
+[Unit]
+Description=Retrain SportyHero paper model daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+Unit=sportyhero-ml.service
+
+[Install]
+WantedBy=timers.target
+
